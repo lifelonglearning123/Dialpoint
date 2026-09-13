@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { pick, trace } from "@/lib/spike/trace";
+import { handleStatus } from "@/lib/routing/handlers";
+import { FORM_KEYS, readForm } from "@/lib/routing/verify";
+import { spikeStatus } from "@/lib/spike/handlers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Status callbacks for every leg; production writes these to tb.call_legs + usage_ledger. */
+/** Status callbacks for the parent call, every child leg, and voicemail recordings. */
 export async function POST(req: NextRequest) {
   const form = await req.formData();
-  const p = pick(form, [
-    "CallSid", "ParentCallSid", "CallStatus", "CallDuration", "To", "From", "SipResponseCode",
-    "RecordingSid", "RecordingUrl", "RecordingStatus", "RecordingDuration",
-  ]);
+  const p = readForm(form, FORM_KEYS);
   const leg = req.nextUrl.searchParams.get("leg") ?? "unknown";
-  trace(p.ParentCallSid ?? p.CallSid ?? "?", `status:${leg}`, p);
+  const handled = await handleStatus(req, form, p, leg);
+  if (handled) return handled;
+  spikeStatus(p, leg);
   return new NextResponse(null, { status: 204 });
 }

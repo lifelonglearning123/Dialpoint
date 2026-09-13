@@ -44,7 +44,7 @@ node scripts/spike/provision.mjs apikey                # API key + TwiML app for
 
 ## 5. Test calls
 
-1. Open `http://localhost:3410/softphone` (registers as `spike-softphone`).
+1. (Phase 1 moved the softphone to `/app/softphone`, per signed-in user. The spike's `spike-softphone` identity no longer registers, so that leg just never answers; the mobile leg and AI path still work on the test line.)
 2. Ring the test number from another phone. Mobile and softphone ring together. Mobile hears "Call for Spike Test Line, press 1 to accept".
 3. Press 1 → bridged. Hang up. Trace shows `human_accepted`.
 4. Ring again, ignore it for 20s → AI answers. Ask it to transfer you → mobile rings from the AI. Trace shows `after_ring_humans` (no-answer) → `ai_registered` → `after_ai`.

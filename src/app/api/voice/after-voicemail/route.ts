@@ -1,13 +1,16 @@
 import { NextRequest } from "next/server";
-import { pick, trace } from "@/lib/spike/trace";
-import { hangup, xml } from "@/lib/spike/twiml";
+import { verifyCursor } from "@/lib/routing/engine";
+import { handleAfterVoicemail } from "@/lib/routing/handlers";
+import { FORM_KEYS, readForm } from "@/lib/routing/verify";
+import { spikeAfterVoicemail } from "@/lib/spike/handlers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   const form = await req.formData();
-  const p = pick(form, ["CallSid", "RecordingUrl", "RecordingSid", "RecordingDuration", "Digits"]);
-  trace(p.CallSid ?? "?", "voicemail_recorded", p);
-  return xml(hangup());
+  const p = readForm(form, FORM_KEYS);
+  const cursor = verifyCursor(req.nextUrl.searchParams.get("k"));
+  if (cursor) return handleAfterVoicemail(p, cursor);
+  return spikeAfterVoicemail(p);
 }

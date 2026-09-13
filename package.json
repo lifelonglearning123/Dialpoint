@@ -10,19 +10,31 @@
     "spike:tunnel": "cloudflared tunnel --url http://localhost:3410"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.116.0",
+    "@t3-oss/env-nextjs": "^0.13.11",
     "@twilio/voice-sdk": "^2.18.5",
+    "clsx": "^2.1.1",
     "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "lucide-react": "^1.45.0",
     "next": "16.3.5",
+    "openai": "^7.15.0",
+    "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "retell-sdk": "^5.66.1",
-    "twilio": "^6.1.1"
+    "sonner": "^2.0.8",
+    "tailwind-merge": "^3.7.0",
+    "twilio": "^6.1.1",
+    "zod": "^4.6.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
     "tailwindcss": "^4",

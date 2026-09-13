@@ -11,6 +11,9 @@ const KEYS = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
+  "DATABASE_URL",
+  "OPENAI_API_KEY",
+  "CREDENTIALS_ENCRYPTION_KEY",
 ];
 
 const src = readFileSync(SRC, "utf8").replace(/^\uFEFF/, "");
@@ -27,7 +30,9 @@ for (const raw of src.split(/\r?\n/)) {
 
 const existing = existsSync(DST) ? readFileSync(DST, "utf8") : "";
 const lines = existing ? existing.split(/\r?\n/).filter(Boolean) : [];
-const out = lines.filter((l) => !KEYS.some((k) => l.startsWith(k + "=")));
+// Only replace keys that were actually found in the source; never drop a key
+// the destination already has (a MISSING source value must not erase it).
+const out = lines.filter((l) => !Object.keys(found).some((k) => l.startsWith(k + "=")));
 for (const k of KEYS) if (found[k]) out.push(`${k}=${found[k]}`);
 writeFileSync(DST, out.join("\n") + "\n");
 
