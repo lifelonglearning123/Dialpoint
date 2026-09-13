@@ -7,7 +7,9 @@ import { z } from "zod";
 import { db } from "@/db/client";
 import { closures, humanTargets, numbers, routingPolicies } from "@/db/schema";
 import { clients } from "@/db/shared";
+import { isAgency, requireManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
+import { parsePolicy } from "@/lib/routing/policy";
 import { TEMPLATE_NAMES, templatePolicy, type IvrChoice, type TemplateName } from "@/lib/routing/policy";
 
 const e164 = z.string().trim().regex(/^\+[1-9]\d{6,14}$/, "Use international format, e.g. +447700900123");
@@ -15,6 +17,8 @@ const e164 = z.string().trim().regex(/^\+[1-9]\d{6,14}$/, "Use international for
 async function ctx() {
   const { session, client } = await currentClient();
   if (!client) throw new Error("No business selected.");
+  // Every action in this file changes routing; client users are read-only.
+  requireManage(session);
   return { session, client };
 }
 
@@ -138,7 +142,19 @@ export async function savePolicy(formData: FormData) {
   const template = String(formData.get("template") ?? "you_first") as TemplateName;
   if (!TEMPLATE_NAMES.includes(template)) throw new Error("Unknown template.");
   const ringSeconds = Math.min(120, Math.max(5, Number(formData.get("ringSeconds") ?? 20) || 20));
-  const aiAgentId = String(formData.get("aiAgentId") ?? "").trim() || undefined;
+  const current = await db.query.routingPolicies.findFirst({ where: and(eq(routingPolicies.numberId, numberId), eq(routingPolicies.active, true)) });
+  // The AI agent link is the agency's to set (it points at their Signal
+  // agent). Client admins keep whatever is already linked when they save.
+  let aiAgentId: string | undefined;
+  if (isAgency(session.role)) {
+    aiAgentId = String(formData.get("aiAgentId") ?? "").trim() || undefined;
+  } else {
+    try {
+      aiAgentId = current ? parsePolicy(current.policy).aiAgentId : undefined;
+    } catch {
+      aiAgentId = undefined;
+    }
+  }
 
   let ivr: { prompt: string; options: Record<string, { label: string; to: IvrChoice }> } | undefined;
   if (template === "front_desk") {
@@ -154,7 +170,6 @@ export async function savePolicy(formData: FormData) {
   }
 
   const policy = templatePolicy(template, { ringSeconds, aiAgentId, ivr });
-  const current = await db.query.routingPolicies.findFirst({ where: and(eq(routingPolicies.numberId, numberId), eq(routingPolicies.active, true)) });
   await db.transaction(async (tx) => {
     if (current) await tx.update(routingPolicies).set({ active: false }).where(eq(routingPolicies.id, current.id));
     await tx.insert(routingPolicies).values({

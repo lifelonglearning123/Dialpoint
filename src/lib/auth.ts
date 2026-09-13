@@ -25,6 +25,15 @@ export function isAgency(role: Role) {
   return role === "super_admin" || role === "agency_staff";
 }
 
+/** Agency staff and client admins change things; client users are read-only. */
+export function canManage(session: Pick<SessionContext, "role">) {
+  return isAgency(session.role) || session.role === "client_admin";
+}
+
+export function requireManage(session: Pick<SessionContext, "role">) {
+  if (!canManage(session)) throw new Error("Only admins can change this.");
+}
+
 export async function getSession(): Promise<SessionContext | null> {
   const agency = await resolveAgency();
   if (!agency) return null;

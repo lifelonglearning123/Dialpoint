@@ -1,6 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { callLegs, calls } from "@/db/schema";
+import { callLegs, calls, numbers } from "@/db/schema";
+import { recordUsage } from "@/lib/billing/usage";
 
 export type LegKind = (typeof callLegs.$inferInsert)["kind"];
 
@@ -72,6 +73,21 @@ export async function recordLeg(input: { callId: string; twilioCallSid: string; 
       accepted: existing.accepted || (existing.kind === "human_client" && (input.status === "in-progress" || input.status === "answered")),
     })
     .where(eq(callLegs.id, existing.id));
+
+  // Billing (Phase 3): a finished human leg is carrier time we pay for. The
+  // ledger is idempotent on the leg SID, so Twilio's retries cannot double bill.
+  if (ended && (input.durationSeconds ?? 0) > 0 && (input.kind === "human_pstn" || input.kind === "human_client")) {
+    const call = await db.query.calls.findFirst({ where: eq(calls.id, input.callId), columns: { clientId: true } });
+    if (call) {
+      await recordUsage({
+        clientId: call.clientId,
+        callId: input.callId,
+        sourceSid: input.twilioCallSid,
+        meter: input.kind === "human_pstn" ? "forward" : "softphone",
+        seconds: input.durationSeconds,
+      }).catch((e) => console.error("[usage] leg", e));
+    }
+  }
 }
 
 /** The human pressed 1 on this leg. */
@@ -96,5 +112,19 @@ export async function finalizeCall(twilioCallSid: string, opts: { durationSecond
     .set({ outcome, endedAt: new Date(), durationSeconds: opts.durationSeconds ?? call.durationSeconds })
     .where(eq(calls.id, call.id))
     .returning();
+
+  // Billing (Phase 3): the caller's own leg. Local/mobile inbound is cheap and
+  // pooled with the allowance; 0800 inbound costs ~8p/min and is always billed.
+  const seconds = opts.durationSeconds ?? call.durationSeconds ?? 0;
+  if (seconds > 0 && call.numberId) {
+    const num = await db.query.numbers.findFirst({ where: eq(numbers.id, call.numberId), columns: { type: true } });
+    await recordUsage({
+      clientId: call.clientId,
+      callId: call.id,
+      sourceSid: twilioCallSid,
+      meter: num?.type === "tollfree" ? "freephone_inbound" : "inbound",
+      seconds,
+    }).catch((e) => console.error("[usage] parent", e));
+  }
   return updated;
 }

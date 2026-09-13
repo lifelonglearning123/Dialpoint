@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { numbers, regulatoryBundles } from "@/db/schema";
+import { canManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import { StatusPill, formatUk, typeLabel } from "@/lib/format";
 import { activateNumberAction, releaseNumberAction, updateNumberLabelAction } from "../actions";
@@ -10,8 +11,9 @@ import { ReleaseButton } from "../release-button";
 
 export default async function NumberDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { client } = await currentClient();
+  const { client, session } = await currentClient();
   if (!client) return null;
+  const manage = canManage(session);
 
   const n = await db.query.numbers.findFirst({ where: and(eq(numbers.id, id), eq(numbers.clientId, client.id)) });
   if (!n) notFound();
@@ -63,7 +65,7 @@ export default async function NumberDetailPage({ params }: { params: Promise<{ i
               {bundle.failureReason && <div className="mt-2 text-xs text-red-700">{bundle.failureReason}</div>}
             </div>
           )}
-          {n.status === "reserved" && bundle?.status === "twilio-approved" && (
+          {manage && n.status === "reserved" && bundle?.status === "twilio-approved" && (
             <form action={activateNumberAction}>
               <input type="hidden" name="numberId" value={n.id} />
               <button type="submit" className="btn-secondary">
@@ -75,18 +77,22 @@ export default async function NumberDetailPage({ params }: { params: Promise<{ i
 
         <section className="card space-y-3">
           <h2 className="font-semibold">Label</h2>
-          <form action={updateNumberLabelAction} className="flex gap-2">
-            <input type="hidden" name="numberId" value={n.id} />
-            <input name="label" defaultValue={n.label ?? ""} placeholder="e.g. Main line, Sales, Website" className="input" maxLength={60} />
-            <button type="submit" className="btn-secondary">
-              Save
-            </button>
-          </form>
+          {manage ? (
+            <form action={updateNumberLabelAction} className="flex gap-2">
+              <input type="hidden" name="numberId" value={n.id} />
+              <input name="label" defaultValue={n.label ?? ""} placeholder="e.g. Main line, Sales, Website" className="input" maxLength={60} />
+              <button type="submit" className="btn-secondary">
+                Save
+              </button>
+            </form>
+          ) : (
+            <p className="text-sm text-slate-700">{n.label ?? "No label set."}</p>
+          )}
           <p className="text-xs text-slate-500">Shown in the whisper (&ldquo;Call for &hellip;&rdquo;) and in the call log.</p>
         </section>
       </div>
 
-      {n.status !== "released" && (
+      {manage && n.status !== "released" && (
         <section className="card">
           <h2 className="font-semibold">Danger zone</h2>
           <p className="mt-1 text-sm text-slate-600">Releasing gives the number back to the carrier. It stops the monthly charge and cannot be undone.</p>

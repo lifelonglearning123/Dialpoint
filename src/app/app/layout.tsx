@@ -10,12 +10,16 @@ const NAV = [
   { href: "/app/routing", label: "Routing" },
   { href: "/app/calls", label: "Calls" },
   { href: "/app/softphone", label: "Softphone" },
+  { href: "/app/billing", label: "Billing" },
   { href: "/app/settings", label: "Settings" },
 ];
+/** Agency-only entries, appended for super_admin / agency_staff. */
+const AGENCY_NAV = [{ href: "/app/agency/plans", label: "Plans" }];
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const { session, client, clients } = await currentClient();
   const agency = session.agency;
+  const nav = isAgency(session.role) ? [...NAV, ...AGENCY_NAV] : NAV;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -34,7 +38,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             </div>
           </div>
           <nav className="hidden gap-1 md:flex">
-            {NAV.map((n) => (
+            {nav.map((n) => (
               <Link key={n.href} href={n.href} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 hover:text-slate-900">
                 {n.label}
               </Link>
@@ -69,7 +73,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </div>
         </div>
         <nav className="flex gap-1 overflow-x-auto px-4 pb-2 md:hidden">
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <Link key={n.href} href={n.href} className="rounded-md px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">
               {n.label}
             </Link>

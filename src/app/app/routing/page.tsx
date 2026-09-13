@@ -2,6 +2,7 @@ import Link from "next/link";
 import { and, asc, desc, eq, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { closures, humanTargets, numbers, routingPolicies } from "@/db/schema";
+import { canManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import { StatusPill, formatUk, typeLabel } from "@/lib/format";
 import { describePolicy, parsePolicy, policyUsesAi, TEMPLATE_LABELS, type TemplateName } from "@/lib/routing/policy";
@@ -21,6 +22,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
   const sp = await searchParams;
   const { client, session } = await currentClient();
   if (!client) return null;
+  const manage = canManage(session);
 
   const [nums, targets, closureRows] = await Promise.all([
     db.query.numbers.findMany({ where: and(eq(numbers.clientId, client.id), ne(numbers.status, "released")), orderBy: [desc(numbers.createdAt)] }),
@@ -38,6 +40,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
       <div>
         <h1 className="text-2xl font-semibold">Routing</h1>
         <p className="text-sm text-slate-500">Who answers each number, when, and what happens if they can&apos;t.</p>
+        {!manage && <p className="mt-2 text-xs text-slate-500">You can view routing; only admins of {client.name} can change it.</p>}
         {sp.saved && <p className="mt-2 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">Routing saved. It applies to the next call.</p>}
       </div>
 
@@ -87,7 +90,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
                     )}
                   </div>
                   <Link href={`/app/routing/${n.id}`} className="btn-secondary shrink-0">
-                    Edit routing
+                    {manage ? "Edit routing" : "View routing"}
                   </Link>
                 </li>
               );
@@ -111,6 +114,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
                   <div className="text-sm font-medium">{t.label}</div>
                   <div className="text-xs text-slate-500">{t.kind === "pstn" ? formatUk(t.value) : "Browser softphone"}</div>
                 </div>
+                {manage && (
                 <div className="flex items-center gap-1 text-xs">
                   <form action={moveTarget}>
                     <input type="hidden" name="id" value={t.id} />
@@ -135,10 +139,12 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
                     <button className="btn-secondary px-2 py-1 text-red-600">Remove</button>
                   </form>
                 </div>
+                )}
               </li>
             ))}
           </ul>
         )}
+        {manage && (
         <div className="grid gap-4 md:grid-cols-2">
           <form action={addPhoneTarget} className="space-y-2 rounded-lg border border-slate-200 p-4">
             <div className="text-sm font-medium">Add a phone</div>
@@ -154,6 +160,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
             </button>
           </form>
         </div>
+        )}
       </section>
 
       <section className="card">
@@ -162,6 +169,7 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
           Used by routes that behave differently out of hours. Leave every day unticked to be &ldquo;always open&rdquo;. Bank holidays (England &amp; Wales) count as closed days automatically.
         </p>
         <form action={saveBusinessHours} className="space-y-3">
+          <fieldset disabled={!manage} className="contents">
           <div className="grid gap-2">
             {DAYS.map(([key, label]) => {
               const h = hours[key];
@@ -182,7 +190,8 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
             <span className="font-medium">Timezone</span>
             <input name="timezone" defaultValue={client.timezone} className="input mt-1 w-64" />
           </label>
-          <button className="btn-primary">Save hours</button>
+          {manage && <button className="btn-primary">Save hours</button>}
+          </fieldset>
         </form>
       </section>
 
@@ -196,19 +205,23 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
                 <span>
                   <span className="tabular-nums">{c.date}</span> · {c.label}
                 </span>
-                <form action={removeClosure}>
-                  <input type="hidden" name="id" value={c.id} />
-                  <button className="text-xs text-red-600">Remove</button>
-                </form>
+                {manage && (
+                  <form action={removeClosure}>
+                    <input type="hidden" name="id" value={c.id} />
+                    <button className="text-xs text-red-600">Remove</button>
+                  </form>
+                )}
               </li>
             ))}
           </ul>
         )}
-        <form action={addClosure} className="flex flex-wrap items-end gap-2">
-          <input type="date" name="date" required className="input w-44" />
-          <input name="label" placeholder="e.g. Christmas shutdown" required className="input w-64" />
-          <button className="btn-secondary">Add closed day</button>
-        </form>
+        {manage && (
+          <form action={addClosure} className="flex flex-wrap items-end gap-2">
+            <input type="date" name="date" required className="input w-44" />
+            <input name="label" placeholder="e.g. Christmas shutdown" required className="input w-64" />
+            <button className="btn-secondary">Add closed day</button>
+          </form>
+        )}
       </section>
     </div>
   );

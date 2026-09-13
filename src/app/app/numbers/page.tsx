@@ -2,6 +2,7 @@ import Link from "next/link";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { numbers } from "@/db/schema";
+import { canManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import { StatusPill, formatUk, typeLabel } from "@/lib/format";
 import { bundlesFor } from "@/lib/twilio/regulatory";
@@ -11,8 +12,9 @@ import { ReleaseButton } from "./release-button";
 export const metadata = { title: "Numbers" };
 
 export default async function NumbersPage() {
-  const { client } = await currentClient();
+  const { client, session } = await currentClient();
   if (!client) return null;
+  const manage = canManage(session);
 
   const [rows, bundles] = await Promise.all([
     db.query.numbers.findMany({ where: and(eq(numbers.clientId, client.id), ne(numbers.status, "released")), orderBy: [desc(numbers.createdAt)] }),
@@ -28,9 +30,11 @@ export default async function NumbersPage() {
           <h1 className="text-2xl font-semibold">Numbers</h1>
           <p className="text-sm text-slate-500">Every number {client.name} owns, and where it stands.</p>
         </div>
-        <Link href="/app/numbers/new" className="btn-primary">
-          Buy a number
-        </Link>
+        {manage && (
+          <Link href="/app/numbers/new" className="btn-primary">
+            Buy a number
+          </Link>
+        )}
       </div>
 
       {pending.length > 0 && (
@@ -91,10 +95,12 @@ export default async function NumbersPage() {
                       <Link href={`/app/routing/${n.id}`} className="text-slate-600 hover:text-slate-900">
                         Routing
                       </Link>
-                      <form action={releaseNumberAction}>
-                        <input type="hidden" name="numberId" value={n.id} />
-                        <ReleaseButton label={formatUk(n.e164)} />
-                      </form>
+                      {manage && (
+                        <form action={releaseNumberAction}>
+                          <input type="hidden" name="numberId" value={n.id} />
+                          <ReleaseButton label={formatUk(n.e164)} />
+                        </form>
+                      )}
                     </div>
                   </td>
                 </tr>

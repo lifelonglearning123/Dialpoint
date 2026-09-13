@@ -2,14 +2,15 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { agencyDomains } from "@/db/schema";
 import { clientMemberships, profiles } from "@/db/shared";
-import { isAgency } from "@/lib/auth";
+import { canManage, isAgency } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
-import { addAgencyDomain, inviteMember, removeAgencyDomain } from "./actions";
+import { addAgencyDomain, createClient, inviteMember, removeAgencyDomain } from "./actions";
 
 export default async function SettingsPage() {
   const { session, client } = await currentClient();
   if (!client) return null;
   const agencyRole = isAgency(session.role);
+  const manage = canManage(session);
 
   const members = await db
     .select({ id: profiles.id, email: profiles.email, fullName: profiles.fullName, role: profiles.role })
@@ -43,6 +44,7 @@ export default async function SettingsPage() {
             </li>
           ))}
         </ul>
+        {manage && (
         <form action={inviteMember} className="mt-4 flex flex-wrap items-end gap-3">
           <input type="hidden" name="clientId" value={client.id} />
           <label className="flex-1 space-y-1.5">
@@ -60,8 +62,37 @@ export default async function SettingsPage() {
             Send invite
           </button>
         </form>
+        )}
         <p className="mt-2 text-xs text-slate-500">They sign in with an emailed code; the invite is claimed on first sign-in. Same account works on the AI receptionist dashboard.</p>
       </section>
+
+      {agencyRole && (
+        <section className="card">
+          <h2 className="font-semibold">Agency: new customer</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Create a customer under {session.agency.name}. They appear in the switcher here and in the Signal dashboard; invite their staff from Team afterwards.
+          </p>
+          <form action={createClient} className="mt-4 grid gap-3 md:grid-cols-3">
+            <label className="space-y-1.5 md:col-span-1">
+              <span className="text-sm font-medium">Business name</span>
+              <input name="name" required className="input" placeholder="Acme Plumbing Ltd" />
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-sm font-medium">Billing email (optional)</span>
+              <input name="billingEmail" type="email" className="input" placeholder="accounts@acme.co.uk" />
+            </label>
+            <label className="space-y-1.5">
+              <span className="text-sm font-medium">Timezone</span>
+              <input name="timezone" defaultValue="Europe/London" className="input" />
+            </label>
+            <div className="md:col-span-3">
+              <button className="btn-primary" type="submit">
+                Create customer and switch to it
+              </button>
+            </div>
+          </form>
+        </section>
+      )}
 
       {agencyRole && (
         <section className="card">

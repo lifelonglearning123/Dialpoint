@@ -11,6 +11,9 @@ export function TemplateForm(props: {
   initialRingSeconds: number;
   initialAgentId: string;
   initialIvr: { prompt: string; options: Record<string, IvrTo> } | null;
+  /** Only agency staff link the AI agent; clients see who manages it. */
+  isAgency: boolean;
+  agencyName: string;
 }) {
   const [template, setTemplate] = useState(props.initialTemplate);
   const usesHumans = template !== "ai_reception";
@@ -72,7 +75,16 @@ export function TemplateForm(props: {
         </div>
       )}
 
-      {usesAi && (
+      {usesAi && !props.isAgency && (
+        <div className="card space-y-1">
+          <div className="text-sm font-medium">AI receptionist</div>
+          <p className="text-sm text-slate-600">
+            {props.initialAgentId ? "Linked and managed by" : "Not linked yet. Managed by"} {props.agencyName}. Ask them to add or change your AI receptionist.
+          </p>
+        </div>
+      )}
+
+      {usesAi && props.isAgency && (
         <div className="card space-y-2">
           <label className="block text-sm">
             <span className="font-medium">AI receptionist</span>

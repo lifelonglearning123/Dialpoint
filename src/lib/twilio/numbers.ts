@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
 import { numbers, regulatoryBundles, type numberType } from "@/db/schema";
 import { clients } from "@/db/shared";
+import { syncActiveNumberQuantity } from "@/lib/billing/subscription";
 import { ensureSubaccount, publicBaseUrl, subaccountClient } from "./master";
 
 export type NumberType = (typeof numberType.enumValues)[number];
@@ -132,6 +133,8 @@ export async function purchaseNumber(numberId: string) {
     .set({ status: "active", twilioSid: bought.sid, bundleId: bundle.id, addressSid: bundle.addressSid, activatedAt: new Date() })
     .where(eq(numbers.id, numberId))
     .returning();
+  // Billing (Phase 3): one more licensed unit on the subscription, prorated.
+  await syncActiveNumberQuantity(row.clientId).catch((e) => console.error("[billing] quantity sync", e));
   return updated;
 }
 
@@ -161,6 +164,8 @@ export async function releaseNumber(numberId: string) {
     });
   }
   await db.update(numbers).set({ status: "released", releasedAt: new Date() }).where(eq(numbers.id, numberId));
+  // Billing (Phase 3): one fewer licensed unit (never below 1 while subscribed).
+  await syncActiveNumberQuantity(row.clientId).catch((e) => console.error("[billing] quantity sync", e));
 }
 
 /** Activate every reserved number of a type once its bundle is approved. */

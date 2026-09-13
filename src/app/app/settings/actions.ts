@@ -6,8 +6,11 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { agencyDomains } from "@/db/schema";
-import { invites } from "@/db/shared";
-import { isAgency, requireClientAccess, requireSession } from "@/lib/auth";
+import { clientMemberships, clients, invites } from "@/db/shared";
+import { isAgency, requireClientAccess, requireManage, requireSession } from "@/lib/auth";
+import { CLIENT_COOKIE } from "@/lib/clients";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { emailCredsForAgency, ghlConfigured, sendGhlEmail } from "@/lib/email/ghl";
 import { invalidateAgencyResolution } from "@/lib/tenancy/resolve";
 
@@ -19,6 +22,7 @@ import { invalidateAgencyResolution } from "@/lib/tenancy/resolve";
  */
 export async function inviteMember(formData: FormData) {
   const session = await requireSession();
+  requireManage(session);
   const parsed = z
     .object({ clientId: z.string().uuid(), email: z.string().email(), role: z.enum(["client_user", "client_admin"]) })
     .safeParse({ clientId: formData.get("clientId"), email: String(formData.get("email") ?? "").trim().toLowerCase(), role: formData.get("role") });
@@ -85,4 +89,39 @@ export async function removeAgencyDomain(formData: FormData) {
   await db.delete(agencyDomains).where(and(eq(agencyDomains.id, id), eq(agencyDomains.agencyId, session.agencyId)));
   invalidateAgencyResolution();
   revalidatePath("/app/settings");
+}
+
+/**
+ * Create a customer (a Signal `clients` row) under this agency and switch to
+ * it. Agency staff only. Same columns Signal's wizard go-live writes, so the
+ * client is immediately usable from Signal too.
+ */
+export async function createClient(formData: FormData) {
+  const session = await requireSession();
+  if (!isAgency(session.role)) throw new Error("Agency staff only.");
+  const parsed = z
+    .object({
+      name: z.string().trim().min(2).max(120),
+      timezone: z.string().trim().min(3).default("Europe/London"),
+      billingEmail: z.string().email().optional().or(z.literal("")),
+    })
+    .safeParse({ name: formData.get("name"), timezone: formData.get("timezone") || "Europe/London", billingEmail: String(formData.get("billingEmail") ?? "").trim() });
+  if (!parsed.success) throw new Error("Enter the business name.");
+
+  const [row] = await db
+    .insert(clients)
+    .values({
+      agencyId: session.agencyId,
+      name: parsed.data.name,
+      timezone: parsed.data.timezone,
+      billingEmail: parsed.data.billingEmail || null,
+      businessHours: { mon: { start: "09:00", end: "17:00" }, tue: { start: "09:00", end: "17:00" }, wed: { start: "09:00", end: "17:00" }, thu: { start: "09:00", end: "17:00" }, fri: { start: "09:00", end: "17:00" } },
+    })
+    .returning({ id: clients.id });
+  // Agency staff see every client anyway; the membership just mirrors Signal's go-live shape.
+  await db.insert(clientMemberships).values({ profileId: session.profileId, clientId: row.id }).onConflictDoNothing();
+
+  const store = await cookies();
+  store.set(CLIENT_COOKIE, row.id, { path: "/", httpOnly: true, sameSite: "lax", maxAge: 60 * 60 * 24 * 365 });
+  redirect("/app");
 }

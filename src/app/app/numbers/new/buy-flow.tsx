@@ -1,13 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { formatUk, typeLabel } from "@/lib/format";
 import type { AvailableNumber, NumberType } from "@/lib/twilio/numbers";
 import type { EndUserType, EvaluationFailure, RegulationSpec } from "@/lib/twilio/regulatory";
 import { regulationSpecAction, reserveNumberAction, searchNumbersAction, submitBundleAction, submitKycAction } from "../actions";
 
-type Step = "type" | "results" | "kyc" | "verifying" | "active";
+type Step = "type" | "results" | "card" | "kyc" | "verifying" | "active";
 
 const TYPE_OPTIONS: Array<{ value: NumberType; title: string; blurb: string; monthly: string }> = [
   { value: "local", title: "Local (01 / 02)", blurb: "A number for your town or city. Needs a UK business address.", monthly: "from £3.50/mo carrier cost" },
@@ -43,17 +43,41 @@ const DEFAULTS: Record<string, string> = {
   is_subassigned: "NO",
 };
 
-export function BuyFlow(props: { clientName: string; contactEmail: string; approvedTypes: string[]; pendingTypes: string[]; prefill: Record<string, string> }) {
-  const [step, setStep] = useState<Step>("type");
-  const [type, setType] = useState<NumberType>("local");
-  const [endUserType, setEndUserType] = useState<EndUserType>("business");
+export type ResumeState = {
+  numberId: string;
+  chosen: AvailableNumber;
+  endUserType: EndUserType;
+  active: boolean;
+  spec: RegulationSpec | null;
+  /** Card step was cancelled at Stripe. */
+  cancelled?: boolean;
+  error?: string;
+};
+
+export function BuyFlow(props: {
+  clientName: string;
+  contactEmail: string;
+  approvedTypes: string[];
+  pendingTypes: string[];
+  prefill: Record<string, string>;
+  /** From the storefront: preselect this type and search for this number first. */
+  initialType?: NumberType;
+  initialContains?: string;
+  /** Present when the browser has just returned from Stripe Checkout (Phase 3). */
+  resume?: ResumeState;
+}) {
+  const r0 = props.resume;
+  const [step, setStep] = useState<Step>(r0 ? (r0.cancelled || r0.error ? "card" : r0.active ? "active" : "kyc") : "type");
+  const [type, setType] = useState<NumberType>(r0?.chosen.type ?? props.initialType ?? "local");
+  const [endUserType, setEndUserType] = useState<EndUserType>(r0?.endUserType ?? "business");
   const [results, setResults] = useState<AvailableNumber[]>([]);
-  const [chosen, setChosen] = useState<AvailableNumber | null>(null);
-  const [numberId, setNumberId] = useState<string | null>(null);
-  const [spec, setSpec] = useState<RegulationSpec | null>(null);
+  const [chosen, setChosen] = useState<AvailableNumber | null>(r0?.chosen ?? null);
+  const [numberId, setNumberId] = useState<string | null>(r0?.numberId ?? null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  const [spec, setSpec] = useState<RegulationSpec | null>(r0?.spec ?? null);
   const [failures, setFailures] = useState<EvaluationFailure[]>([]);
   const [bundleId, setBundleId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(r0?.error ?? (r0?.cancelled ? "Payment was cancelled. Add a card to continue." : null));
   const [pending, start] = useTransition();
 
   const search = (fd: FormData) => {
@@ -67,6 +91,17 @@ export function BuyFlow(props: { clientName: string; contactEmail: string; appro
     });
   };
 
+  // Storefront hand-off: run the search for the chosen number once on mount.
+  const autoSearched = useRef(false);
+  useEffect(() => {
+    if (autoSearched.current || !props.initialContains) return;
+    autoSearched.current = true;
+    const fd = new FormData();
+    fd.set("contains", props.initialContains);
+    search(fd);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const reserve = (n: AvailableNumber) => {
     setError(null);
     const fd = new FormData();
@@ -79,9 +114,34 @@ export function BuyFlow(props: { clientName: string; contactEmail: string; appro
       if (!r.ok) return setError(r.error);
       setChosen(n);
       setNumberId(r.data.numberId);
+      if (r.data.checkoutUrl) {
+        setCheckoutUrl(r.data.checkoutUrl);
+        return setStep("card");
+      }
       if (r.data.active) return setStep("active");
       setSpec(r.data.spec);
       setStep("kyc");
+    });
+  };
+
+  const retryCheckout = () => {
+    if (!chosen) return;
+    setError(null);
+    const fd = new FormData();
+    fd.set("type", type);
+    fd.set("e164", chosen.e164);
+    fd.set("locality", chosen.locality ?? "");
+    fd.set("endUserType", endUserType);
+    start(async () => {
+      const r = await reserveNumberAction(fd);
+      if (!r.ok) return setError(r.error);
+      setNumberId(r.data.numberId);
+      if (r.data.checkoutUrl) window.location.assign(r.data.checkoutUrl);
+      else if (r.data.active) setStep("active");
+      else {
+        setSpec(r.data.spec);
+        setStep("kyc");
+      }
     });
   };
 
@@ -198,6 +258,35 @@ export function BuyFlow(props: { clientName: string; contactEmail: string; appro
               Reserving holds the number in your account. Because this is your first {typeLabel(type).toLowerCase()} number, Ofcom rules mean we need to register who owns it before it can go live.
             </p>
           )}
+        </div>
+      )}
+
+      {step === "card" && chosen && (
+        <div className="card space-y-4">
+          <h2 className="font-semibold">Add a card for {formatUk(chosen.e164)}</h2>
+          <p className="text-sm text-slate-600">
+            Numbers are billed monthly: a fixed fee per number plus the minutes you use, charged automatically to a card you save once. The first
+            invoice is raised at the end of the month the number goes live.
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-slate-600">
+            <li>Fixed monthly fee per active number.</li>
+            <li>Usage: forwarded, inbound and browser minutes over your allowance, plus 0800 inbound minutes.</li>
+            <li>Change your card or view invoices any time under Billing. Cancel any month.</li>
+          </ul>
+          <div className="flex items-center justify-between pt-2">
+            <button type="button" onClick={() => setStep("results")} className="text-sm text-slate-500 hover:text-slate-900">
+              Back
+            </button>
+            {checkoutUrl ? (
+              <a href={checkoutUrl} className="btn-primary">
+                Continue to secure payment
+              </a>
+            ) : (
+              <button type="button" disabled={pending} onClick={retryCheckout} className="btn-primary">
+                {pending ? "One moment…" : "Continue to secure payment"}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -338,8 +427,9 @@ export function BuyFlow(props: { clientName: string; contactEmail: string; appro
 function Steps({ current }: { current: Step }) {
   const items: Array<[Step[], string]> = [
     [["type", "results"], "1. Choose a number"],
-    [["kyc"], "2. Register the owner"],
-    [["verifying", "active"], "3. Go live"],
+    [["card"], "2. Card on file"],
+    [["kyc"], "3. Register the owner"],
+    [["verifying", "active"], "4. Go live"],
   ];
   return (
     <ol className="flex gap-6 text-sm">

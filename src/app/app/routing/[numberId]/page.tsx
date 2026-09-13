@@ -3,16 +3,18 @@ import { notFound } from "next/navigation";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/db/client";
 import { numbers, routingPolicies } from "@/db/schema";
+import { canManage, isAgency } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import { formatUk, typeLabel } from "@/lib/format";
-import { parsePolicy, TEMPLATE_LABELS, TEMPLATE_NAMES, type Policy, type TemplateName } from "@/lib/routing/policy";
+import { describePolicy, parsePolicy, TEMPLATE_LABELS, TEMPLATE_NAMES, type Policy, type TemplateName } from "@/lib/routing/policy";
 import { savePolicy } from "../actions";
 import { TemplateForm } from "./template-form";
 
 export default async function EditRoutingPage({ params }: { params: Promise<{ numberId: string }> }) {
   const { numberId } = await params;
-  const { client } = await currentClient();
+  const { client, session } = await currentClient();
   if (!client) return null;
+  const manage = canManage(session);
   const number = await db.query.numbers.findFirst({ where: and(eq(numbers.id, numberId), eq(numbers.clientId, client.id), ne(numbers.status, "released")) });
   if (!number) notFound();
   const row = await db.query.routingPolicies.findFirst({ where: and(eq(routingPolicies.numberId, number.id), eq(routingPolicies.active, true)) });
@@ -40,6 +42,19 @@ export default async function EditRoutingPage({ params }: { params: Promise<{ nu
         </p>
       </div>
 
+      {!manage && (
+        <div className="card space-y-2">
+          <h2 className="font-semibold">{current ? (TEMPLATE_LABELS[(current.template ?? "custom") as TemplateName]?.title ?? "Custom") : "Default: ring your phones, then voicemail"}</h2>
+          <ul className="space-y-0.5 text-sm text-slate-600">
+            {(current ? describePolicy(current) : []).map((l, i) => (
+              <li key={i}>{l}</li>
+            ))}
+          </ul>
+          <p className="text-xs text-slate-500">Only admins of {client.name} can change routing.</p>
+        </div>
+      )}
+
+      {manage && (
       <form action={savePolicy} className="space-y-6">
         <input type="hidden" name="numberId" value={number.id} />
         <TemplateForm
@@ -48,6 +63,8 @@ export default async function EditRoutingPage({ params }: { params: Promise<{ nu
           initialRingSeconds={ring}
           initialAgentId={current?.aiAgentId ?? ""}
           initialIvr={ivr}
+          isAgency={isAgency(session.role)}
+          agencyName={session.agency.name}
         />
         <div className="flex items-center gap-3">
           <button type="submit" className="btn-primary">
@@ -58,6 +75,7 @@ export default async function EditRoutingPage({ params }: { params: Promise<{ nu
           </Link>
         </div>
       </form>
+      )}
     </div>
   );
 }

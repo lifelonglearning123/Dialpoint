@@ -14,6 +14,7 @@ const KEYS = [
   "DATABASE_URL",
   "OPENAI_API_KEY",
   "CREDENTIALS_ENCRYPTION_KEY",
+  "STRIPE_SECRET_KEY",
 ];
 
 const src = readFileSync(SRC, "utf8").replace(/^\uFEFF/, "");

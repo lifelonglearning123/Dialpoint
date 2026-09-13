@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import { voicemails } from "@/db/schema";
 import { env } from "@/env";
 import { masterCreds, subaccountCreds } from "@/lib/twilio/master";
+import { recordUsage } from "@/lib/billing/usage";
 import { appendTrace } from "./calls";
 
 /**
@@ -70,6 +71,10 @@ export async function transcribeVoicemail(voicemailId: string) {
     }
     await db.update(voicemails).set({ transcript: transcript || "(no speech detected)", summary, transcribedAt: new Date() }).where(eq(voicemails.id, vm.id));
     await appendTrace(vm.callId, "voicemail_transcribed", { chars: String(transcript.length) });
+    // Billing (Phase 3): one transcription; only charged when the plan prices it.
+    await recordUsage({ clientId: vm.clientId, callId: vm.callId, sourceSid: vm.recordingSid, meter: "voicemail_transcribe", count: 1 }).catch((e) =>
+      console.error("[usage] voicemail", e),
+    );
   } catch (e) {
     console.error("[voicemail] transcription failed", e);
     await appendTrace(vm.callId, "voicemail_transcription_failed", { error: String(e).slice(0, 200) });

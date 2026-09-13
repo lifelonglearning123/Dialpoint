@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { env } from "@/env";
+import { AUTH_COOKIE } from "@/lib/supabase/cookie";
 
 /**
  * Paths reachable with no session. Everything else bounces to /login.
@@ -9,6 +10,7 @@ import { env } from "@/env";
  */
 const PUBLIC_PATHS = [
   "/login",
+  "/signup", // self-serve customer signup from the storefront
   "/auth",
   "/api/auth",
   "/api/voice", // Twilio voice webhooks
@@ -21,6 +23,7 @@ export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const supabase = createServerClient(env.NEXT_PUBLIC_SUPABASE_URL, env.NEXT_PUBLIC_SUPABASE_ANON_KEY, {
+    cookieOptions: { name: AUTH_COOKIE },
     cookies: {
       getAll() {
         return request.cookies.getAll();

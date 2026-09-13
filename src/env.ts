@@ -28,6 +28,10 @@ export const env = createEnv({
     /** Bearer for this app → Signal partner API. */
     SIGNAL_PARTNER_URL: z.string().url().optional(),
     SIGNAL_PARTNER_SECRET: z.string().optional(),
+    /** Stripe platform key (same as Signal's); connected accounts via the Stripe-Account header. */
+    STRIPE_SECRET_KEY: z.string().optional(),
+    /** This app's own Connect webhook endpoint secret (events from connected accounts). */
+    STRIPE_WEBHOOK_SECRET: z.string().optional(),
     /** Header x-cron-secret for /api/cron/* (Vercel Cron sends it via vercel.json). */
     CRON_SECRET: z.string().optional(),
     /** HMAC key for the signed routing cursor in Twilio action URLs (falls back to CREDENTIALS_ENCRYPTION_KEY). */
@@ -54,6 +58,8 @@ export const env = createEnv({
     SIGNAL_PARTNER_URL: process.env.SIGNAL_PARTNER_URL,
     SIGNAL_PARTNER_SECRET: process.env.SIGNAL_PARTNER_SECRET,
     CRON_SECRET: process.env.CRON_SECRET,
+    STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
+    STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
     ROUTING_SIGNING_SECRET: process.env.ROUTING_SIGNING_SECRET,
     RETELL_API_KEY: process.env.RETELL_API_KEY,
     RETELL_SIP_HOST: process.env.RETELL_SIP_HOST,

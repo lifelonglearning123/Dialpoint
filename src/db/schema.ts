@@ -285,3 +285,122 @@ export const voicemails = tb.table(
   },
   (t) => [index("tb_voicemails_client_idx").on(t.clientId, t.createdAt)],
 );
+
+/* ------------------------------------------------------------------------
+ * Phase 3: billing. Fixed monthly fee per number + usage, charged automatically
+ * through a Stripe subscription on the agency's Connect account. AI minutes are
+ * Signal's and never appear here.
+ * ---------------------------------------------------------------------- */
+
+export const usageMeter = tb.enum("usage_meter", [
+  "forward", // outbound leg to the client's mobile/landline
+  "inbound", // the caller's leg on a local/mobile number
+  "softphone", // <Client> leg
+  "freephone_inbound", // caller's leg on an 0800 (no allowance, always billed)
+  "voicemail_transcribe", // per transcription
+]);
+export const subscriptionState = tb.enum("subscription_state", [
+  "incomplete", // checkout started, not paid
+  "active",
+  "past_due", // a renewal failed; Stripe is retrying
+  "unpaid", // retries exhausted; subaccount suspended
+  "cancelled",
+]);
+
+/** Retail plans, one or more per agency; prices set by the agency above the wholesale floor. */
+export const plans = tb.table(
+  "plans",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    agencyId: uuid("agency_id")
+      .notNull()
+      .references(() => agencies.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    currency: text("currency").notNull().default("GBP"),
+    numberMonthlyPence: integer("number_monthly_pence").notNull(),
+    includedMinutes: integer("included_minutes").notNull().default(0),
+    perMinutePence: integer("per_minute_pence").notNull(),
+    freephoneInboundPence: integer("freephone_inbound_pence").notNull().default(12),
+    voicemailTranscribePence: integer("voicemail_transcribe_pence").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+    isDefault: boolean("is_default").notNull().default(false),
+    // Stripe objects on the agency's connected account, created when the plan is published.
+    stripeProductId: text("stripe_product_id"),
+    stripeNumberPriceId: text("stripe_number_price_id"),
+    stripeUsagePriceId: text("stripe_usage_price_id"),
+    stripeFreephonePriceId: text("stripe_freephone_price_id"),
+    stripeUsageMeterId: text("stripe_usage_meter_id"),
+    stripeFreephoneMeterId: text("stripe_freephone_meter_id"),
+    stripeVoicemailPriceId: text("stripe_voicemail_price_id"),
+    stripeVoicemailMeterId: text("stripe_voicemail_meter_id"),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("tb_plans_agency_idx").on(t.agencyId)],
+);
+
+/** One subscription per client: licensed item (quantity = active numbers) + metered items. */
+export const subscriptions = tb.table(
+  "subscriptions",
+  {
+    clientId: uuid("client_id")
+      .primaryKey()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    planId: uuid("plan_id")
+      .notNull()
+      .references(() => plans.id, { onDelete: "restrict" }),
+    /** The Stripe account the customer + subscription live on (agency's acct_…). */
+    stripeAccountId: text("stripe_account_id").notNull(),
+    stripeCustomerId: text("stripe_customer_id").notNull(),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    stripeCheckoutSessionId: text("stripe_checkout_session_id"),
+    licensedItemId: text("licensed_item_id"),
+    usageItemId: text("usage_item_id"),
+    freephoneItemId: text("freephone_item_id"),
+    voicemailItemId: text("voicemail_item_id"),
+    state: subscriptionState("state").notNull().default("incomplete"),
+    currentPeriodStart: timestamp("current_period_start", { withTimezone: true }),
+    currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    pastDueSince: timestamp("past_due_since", { withTimezone: true }),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("tb_subscriptions_stripe_sub_unique").on(t.stripeSubscriptionId)],
+);
+
+/** One row per billable leg/event, pushed to Stripe Billing Meters by cron. */
+export const usageLedger = tb.table(
+  "usage_ledger",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    callId: uuid("call_id").references(() => calls.id, { onDelete: "set null" }),
+    /** Twilio leg CallSid (or RecordingSid for transcriptions); with meter, the idempotency key. */
+    sourceSid: text("source_sid").notNull(),
+    meter: usageMeter("meter").notNull(),
+    /** Minutes rounded up per leg, or 1 per transcription. */
+    quantity: integer("quantity").notNull(),
+    seconds: integer("seconds"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    stripeMeterEventId: text("stripe_meter_event_id"),
+    pushedAt: timestamp("pushed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("tb_usage_ledger_source_meter_unique").on(t.sourceSid, t.meter),
+    index("tb_usage_ledger_client_occurred_idx").on(t.clientId, t.occurredAt),
+    index("tb_usage_ledger_unpushed_idx").on(t.pushedAt),
+  ],
+);
+
+/** Stripe webhook idempotency. */
+export const stripeEvents = tb.table("stripe_events", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(),
+  receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+});
