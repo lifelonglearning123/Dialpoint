@@ -113,6 +113,7 @@ export function RegistrationCards(props: {
   const [, start] = useTransition();
 
   const register = (type: string, fd: FormData, force = false) => {
+    if (busy) return; // ignore a second click while a registration is in flight
     fd.set("type", type);
     if (force) fd.set("force", "1");
     setBusy(type);

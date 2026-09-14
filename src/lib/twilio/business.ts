@@ -121,6 +121,23 @@ export async function registerType(
   opts: { force?: boolean; identityDocument?: { file: File; type: string } } = {},
 ): Promise<RegisterResult> {
   const regType = registrableTypeFor(type);
+
+  // Idempotency: one live registration per client per type. A double-click,
+  // a second tab or the buy flow re-running the gate must never create a
+  // second bundle while one is already under review or approved. Guarded in
+  // the database, not the button, so it holds across concurrent requests.
+  const live = await db.query.regulatoryBundles.findFirst({
+    where: and(
+      eq(regulatoryBundles.clientId, clientId),
+      eq(regulatoryBundles.numberType, regType),
+      inArray(regulatoryBundles.status, ["pending-review", "in-review", "twilio-approved", "provisionally-approved"]),
+    ),
+    orderBy: [desc(regulatoryBundles.createdAt)],
+  });
+  if (live && !(opts.force && live.status !== "twilio-approved")) {
+    return { bundleId: live.id, compliant: true, failures: [], status: live.status };
+  }
+
   const profile = await getBusinessProfile(clientId);
   if (!profile) throw new Error("Add your business details first.");
   if (!profile.address) throw new Error("Add your business address first.");
