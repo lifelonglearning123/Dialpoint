@@ -204,11 +204,11 @@ Next.js 16 (App Router) + Supabase + Vercel + Stripe Connect + Twilio (Voice, Re
 
 **Phase 0 — Spike. DONE 2026-09-13, verdict GO** (see SPIKE.md). Test line +44 20 4652 7858 on the master account; all routing legs proven live including AI→human transfer via webhook + Twilio redirect.
 
-**Phase 1 — Core (week 1-2).** Tenancy + auth, number search/reserve/buy, KYC bundle flow with status polling and the bundle-approved webhook, routing policy engine with templates 1 and 3, human targets, voicemail + transcription, call log with route trace.
+**Phase 1 — BUILT 2026-09-13 (commit daf82ca).** Original scope: Tenancy + auth, number search/reserve/buy, KYC bundle flow with status polling and the bundle-approved webhook, routing policy engine with templates 1 and 3, human targets, voicemail + transcription, call log with route trace.
 
 **Phase 2 — AI hand-off (week 3).** Signal side: partner SSO start, agent-only wizard mode, `voice/register`, `call.ended` + `agent.status` webhooks, `org_ref` join key. This side: "Add AI receptionist" SSO hop, `ai` policy step via `<Dial><Sip>`, AI-first template, cap-aware fallback, IVR template, caller rules.
 
-**Phase 3 — Money + agency admin (week 4).** Plans as data per agency, Stripe Checkout → subscription (licensed number item + metered usage item), Billing Meter events from Twilio callbacks, automatic invoicing, dunning → subaccount suspend/resume, agency admin (branding, custom domain, plans, wholesale vs retail price view), agency-facing landing page template with number search above the fold.
+**Phase 3 — BUILT 2026-09-14, awaiting live test (migration 0001 + Stripe webhook secret + first published plan).** Original scope: Plans as data per agency, Stripe Checkout → subscription (licensed number item + metered usage item), Billing Meter events from Twilio callbacks, automatic invoicing, dunning → subaccount suspend/resume, agency admin (branding, custom domain, plans, wholesale vs retail price view), agency-facing landing page template with number search above the fold.
 
 **Phase 4 — Polish.** Softphone presence, bank-holiday feed, notifications (missed call, voicemail, cap alerts), route-trace debugger UI, porting request form (manual fulfilment).
 

@@ -1,6 +1,6 @@
-// Dev helper: forward Stripe (Connect) webhooks to the local app using the
-// platform key from .env.local, and write the CLI's signing secret to
-// STRIPE_WEBHOOK_SECRET. Runs detached; log in %TMP%/stripe-listen.log.
+// Dev helper: forward LIVE Stripe (Connect) webhooks to the local app and write
+// the CLI's signing secret to STRIPE_WEBHOOK_SECRET. Live-mode listen needs the
+// CLI's own login (a platform secret key is refused): run `stripe login` once. Runs detached; log in %TMP%/stripe-listen.log.
 //   node scripts/dev/stripe-listen.mjs
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
@@ -25,7 +25,7 @@ const logPath = join(process.env.TMP ?? ".", "stripe-listen.log");
 const log = openSync(logPath, "w");
 const child = spawn(
   exe,
-  ["listen", "--live", "--api-key", process.env.STRIPE_SECRET_KEY, "--forward-connect-to", `${target}/api/webhooks/stripe`, "--forward-to", `${target}/api/webhooks/stripe`],
+  ["listen", "--live", "--forward-connect-to", `${target}/api/webhooks/stripe`, "--forward-to", `${target}/api/webhooks/stripe`],
   { detached: true, stdio: ["ignore", log, log], windowsHide: true },
 );
 child.unref();

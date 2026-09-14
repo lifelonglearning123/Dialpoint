@@ -4,10 +4,10 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 const SRC = "C:/python/Signal/voice-retell-elevenlabs/.env.local";
 const DST = ".env.local";
+// Only keys Signal actually holds. Twilio/Retell keys are NOT here: Signal keeps
+// those encrypted per agency in its DB, so its .env.local has them EMPTY, and an
+// earlier version of this script deleted Chao's values because of that.
 const KEYS = [
-  "TWILIO_ACCOUNT_SID",
-  "TWILIO_AUTH_TOKEN",
-  "RETELL_API_KEY",
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_ANON_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
@@ -26,7 +26,7 @@ for (const raw of src.split(/\r?\n/)) {
   if (!m) continue;
   let v = m[2].trim();
   if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
-  if (KEYS.includes(m[1])) found[m[1]] = v;
+  if (KEYS.includes(m[1]) && v) found[m[1]] = v; // empty source values are ignored
 }
 
 const existing = existsSync(DST) ? readFileSync(DST, "utf8") : "";

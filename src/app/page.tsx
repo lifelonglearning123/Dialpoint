@@ -101,7 +101,7 @@ export default async function StorefrontPage() {
             <ol className="mt-8 grid gap-6 md:grid-cols-4">
               {[
                 ["Choose a number", "Search live UK inventory by area code or type and pick the one you like."],
-                ["Verify with Ofcom", "UK rules mean every number is registered to its owner. A short form; approval is usually within 24 hours."],
+                ["Verify with Ofcom", "UK rules mean every number is registered to its owner. Enter your business details once; they cover every number you buy afterwards, and approval is usually within 24 hours."],
                 ["Decide who answers", "You, the AI receptionist, or both: ring you first and hand over to the AI when you can't pick up. Set hours, holidays and a keypad menu."],
                 ["Go live", "The number activates itself on approval. Answer on your phone or in the browser, and read every call in your log."],
               ].map(([title, body], i) => (

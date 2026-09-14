@@ -9,7 +9,8 @@ import { requireClientAccess, requireManage, requireSession } from "@/lib/auth";
 import { confirmCheckout, ensureSubscription } from "@/lib/billing/subscription";
 import { currentClient } from "@/lib/clients";
 import { approvedBundleFor, purchaseNumber, releaseNumber, reserveNumber, searchNumbers, type AvailableNumber, type NumberType } from "@/lib/twilio/numbers";
-import { createBundle, evaluateBundle, getRegulationSpec, submitBundle, type EndUserType, type EvaluationFailure, type RegulationSpec } from "@/lib/twilio/regulatory";
+import { getBusinessProfile, registerType, registrableTypeFor, registrationStatus } from "@/lib/twilio/business";
+import type { EndUserType, EvaluationFailure } from "@/lib/twilio/regulatory";
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -56,11 +57,13 @@ export type ReserveOutcome = {
   numberId: string;
   /** true = an approved registration existed and the number is now live. */
   active: boolean;
-  /** When not active: the regulation form to render. */
-  spec: RegulationSpec | null;
   endUserType: EndUserType;
   /** Set when the client has no card on file yet: the browser must visit Stripe first. */
   checkoutUrl?: string;
+  /** No business details saved yet: send the customer to /app/business once. */
+  needsProfile?: boolean;
+  /** The Ofcom registration attempted from the stored details for this type. */
+  registration?: { submitted: boolean; failures: EvaluationFailure[]; bundleId: string | null };
 };
 
 /** Absolute origin of the current request (127.0.0.1 in dev, the agency's host in prod). */
@@ -84,18 +87,37 @@ async function continueAfterReserve(clientId: string, numberId: string, type: Nu
     cancelUrl: `${origin}/app/numbers/new?checkout=cancel&numberId=${numberId}`,
     email,
   });
-  if (!gate.ok) return { numberId, active: false, spec: null, endUserType, checkoutUrl: gate.checkoutUrl };
+  if (!gate.ok) return { numberId, active: false, endUserType, checkoutUrl: gate.checkoutUrl };
 
   if (await approvedBundleFor(clientId, type)) {
     await purchaseNumber(numberId);
     revalidatePath("/app");
     revalidatePath("/app/numbers");
-    return { numberId, active: true, spec: null, endUserType };
+    return { numberId, active: true, endUserType };
   }
-  const spec = await getRegulationSpec("GB", type, endUserType);
-  if (!spec) throw new Error(`Twilio has no ${endUserType} regulation for GB ${type}.`);
+
+  // Not registered for this type yet: register from the stored business details
+  // (entered once under /app/business). Nothing is asked for here.
+  const profile = await getBusinessProfile(clientId);
+  if (!profile) {
+    revalidatePath("/app/numbers");
+    return { numberId, active: false, endUserType, needsProfile: true };
+  }
+  const already = await registrationStatus(clientId);
+  const current = already.find((r) => r.type === registrableTypeFor(type));
+  if (current && (current.state === "pending-review" || current.state === "in-review")) {
+    revalidatePath("/app/numbers");
+    return { numberId, active: false, endUserType: profile.endUserType as EndUserType, registration: { submitted: true, failures: [], bundleId: current.bundleId } };
+  }
+  const reg = await registerType(clientId, type);
   revalidatePath("/app/numbers");
-  return { numberId, active: false, spec, endUserType };
+  revalidatePath("/app/business");
+  return {
+    numberId,
+    active: false,
+    endUserType: profile.endUserType as EndUserType,
+    registration: { submitted: reg.status === "pending-review" || reg.status === "in-review", failures: reg.failures, bundleId: reg.bundleId },
+  };
 }
 
 /** Step 1 → 2: hold the number, then card on file → buy or Ofcom form. */
@@ -123,101 +145,8 @@ export async function resumeAfterCheckout(numberId: string, endUserType: EndUser
   if (!row) throw new Error("Number not found.");
   const paid = await confirmCheckout(client.id);
   if (!paid) throw new Error("Payment was not completed. Try again to add a card.");
-  const outcome = row.status === "active" ? { numberId, active: true, spec: null, endUserType } : await continueAfterReserve(client.id, row.id, row.type, endUserType, session.email);
+  const outcome = row.status === "active" ? { numberId, active: true, endUserType } : await continueAfterReserve(client.id, row.id, row.type, endUserType, session.email);
   return { ...outcome, e164: row.e164, type: row.type, locality: row.locality };
-}
-
-/** Fetch the form spec for a type (used when switching business/individual). */
-export async function regulationSpecAction(type: string, endUserType: string): Promise<Result<RegulationSpec>> {
-  try {
-    await ctx();
-    const spec = await getRegulationSpec("GB", asType(type), endUserType === "individual" ? "individual" : "business");
-    if (!spec) throw new Error("No regulation found.");
-    return { ok: true, data: spec };
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export type KycOutcome = {
-  bundleId: string;
-  compliant: boolean;
-  failures: EvaluationFailure[];
-  /** Set when compliant and submitted in the same step. */
-  submittedStatus?: string;
-};
-
-/**
- * Step 2: build the regulatory bundle from the form, evaluate, and if it
- * passes submit it for review immediately (the customer already clicked
- * "Submit registration"). Failures come back inline for correction.
- * FormData keys: type, endUserType, contact_email, friendly_name, address_*
- * (customer_name, street, city, region, postal_code), identity_document (file,
- * individuals), and one key per regulation field (its machine name).
- */
-export async function submitKycAction(formData: FormData): Promise<Result<KycOutcome>> {
-  try {
-    const { session, client } = await ctx();
-    requireManage(session);
-    const type = asType(formData.get("type"));
-    const endUserType = (String(formData.get("endUserType") ?? "business") === "individual" ? "individual" : "business") as EndUserType;
-    const spec = await getRegulationSpec("GB", type, endUserType);
-    if (!spec) throw new Error("No regulation found.");
-
-    const endUserAttributes: Record<string, string> = {};
-    for (const f of spec.endUserFields) {
-      const v = String(formData.get(f.name) ?? "").trim();
-      if (v) endUserAttributes[f.name] = v;
-    }
-    const address = {
-      customerName: String(formData.get("address_customer_name") ?? "").trim(),
-      street: String(formData.get("address_street") ?? "").trim(),
-      city: String(formData.get("address_city") ?? "").trim(),
-      region: String(formData.get("address_region") ?? "").trim(),
-      postalCode: String(formData.get("address_postal_code") ?? "").trim(),
-      isoCountry: "GB",
-    };
-    for (const [k, v] of Object.entries(address)) if (!v) throw new Error(`Address: ${k.replace(/([A-Z])/g, " $1").toLowerCase()} is required.`);
-
-    const email = String(formData.get("contact_email") ?? session.email).trim();
-    const friendlyName = String(formData.get("friendly_name") ?? "").trim() || endUserAttributes.business_name || address.customerName || client.name;
-
-    const file = formData.get("identity_document");
-    const identityDocument = file instanceof File && file.size > 0 ? { file, type: String(formData.get("identity_document_type") ?? "passport") } : undefined;
-
-    const result = await createBundle({ clientId: client.id, numberType: type, endUserType, email, friendlyName, endUserAttributes, address, identityDocument });
-
-    if (!result.evaluation.compliant) {
-      return { ok: true, data: { bundleId: result.bundleId, compliant: false, failures: result.evaluation.failures } };
-    }
-    const submitted = await submitBundle(result.bundleId);
-    revalidatePath("/app/numbers");
-    return { ok: true, data: { bundleId: result.bundleId, compliant: true, failures: [], submittedStatus: submitted.status } };
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-/** Re-check a draft after Twilio's evaluation flagged something. */
-export async function evaluateBundleAction(bundleId: string): Promise<Result<{ compliant: boolean; failures: EvaluationFailure[] }>> {
-  try {
-    requireManage((await ctx()).session);
-    const r = await evaluateBundle(bundleId);
-    return { ok: true, data: { compliant: r.compliant, failures: r.failures } };
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export async function submitBundleAction(bundleId: string, force = false): Promise<Result<{ status: string }>> {
-  try {
-    requireManage((await ctx()).session);
-    const r = await submitBundle(bundleId, { force });
-    revalidatePath("/app/numbers");
-    return { ok: true, data: r };
-  } catch (e) {
-    return fail(e);
-  }
 }
 
 export async function releaseNumberAction(formData: FormData): Promise<void> {

@@ -404,3 +404,22 @@ export const stripeEvents = tb.table("stripe_events", {
   type: text("type").notNull(),
   receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * The business's legal details for Ofcom/Twilio registration, entered once
+ * (Settings → Business details). Bundles for each number type are created
+ * from this, so a customer never retypes them per number.
+ */
+export const businessProfiles = tb.table("business_profiles", {
+  clientId: uuid("client_id")
+    .primaryKey()
+    .references(() => clients.id, { onDelete: "cascade" }),
+  endUserType: text("end_user_type").notNull().default("business"), // business | individual
+  /** Regulation field name → value (business_name, business_registration_number, authorized_representative_1_*, …). */
+  attributes: jsonb("attributes").$type<Record<string, string>>().notNull().default({}),
+  address: jsonb("address").$type<{ customerName: string; street: string; city: string; region: string; postalCode: string; isoCountry: string }>(),
+  contactEmail: text("contact_email"),
+  updatedBy: uuid("updated_by").references(() => profiles.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

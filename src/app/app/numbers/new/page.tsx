@@ -4,6 +4,7 @@ import { numbers } from "@/db/schema";
 import { canManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import type { NumberType } from "@/lib/twilio/numbers";
+import { getBusinessProfile } from "@/lib/twilio/business";
 import { bundlesFor } from "@/lib/twilio/regulatory";
 import { resumeAfterCheckout } from "../actions";
 import { BuyFlow, type ResumeState } from "./buy-flow";
@@ -31,26 +32,26 @@ export default async function NewNumberPage({
   // Preselect from the storefront (/signup?number=&type=): show that number first.
   const initialType = sp.type && (TYPES as string[]).includes(sp.type) ? (sp.type as NumberType) : undefined;
   const initialContains = initialType && sp.number && /^\+44\d{9,10}$/.test(sp.number) ? sp.number : undefined;
-  const bundles = await bundlesFor(client.id);
+  const [bundles, profile] = await Promise.all([bundlesFor(client.id), getBusinessProfile(client.id)]);
   const approvedTypes = bundles.filter((b) => b.status === "twilio-approved").map((b) => b.numberType);
   const pendingTypes = bundles.filter((b) => b.status === "pending-review" || b.status === "in-review").map((b) => b.numberType);
-  // Prefill from the most recent registration so a second type is one click.
-  const last = bundles[0]?.submitted ?? {};
 
-  // Back from Stripe Checkout (Phase 3): confirm the card and carry on.
+  // Back from Stripe Checkout, or back from /app/business with a reserved
+  // number: confirm the card (a no-op when already on file) and carry on.
   let resume: ResumeState | undefined;
-  if (sp.checkout && sp.numberId) {
-    const endUserType = sp.endUserType === "individual" ? "individual" : "business";
+  if (sp.numberId) {
+    const endUserType = profile?.endUserType === "individual" ? "individual" : sp.endUserType === "individual" ? "individual" : "business";
     const row = await db.query.numbers.findFirst({ where: eq(numbers.id, sp.numberId) });
     if (row && row.clientId === client.id) {
       const chosen = { e164: row.e164, locality: row.locality, type: row.type, friendly: row.e164 };
-      if (sp.checkout === "cancel") resume = { numberId: row.id, chosen, endUserType, active: false, spec: null, cancelled: true };
+      if (sp.checkout === "cancel") resume = { numberId: row.id, chosen, endUserType, active: false, cancelled: true };
       else {
         try {
           const r = await resumeAfterCheckout(row.id, endUserType);
-          resume = { numberId: r.numberId, chosen, endUserType, active: r.active, spec: r.spec };
+          resume = { numberId: r.numberId, chosen, endUserType, active: r.active, needsProfile: r.needsProfile, registration: r.registration };
+          if (r.checkoutUrl) resume = { ...resume, cancelled: true, error: "Add a card to continue." };
         } catch (e) {
-          resume = { numberId: row.id, chosen, endUserType, active: false, spec: null, error: (e as Error).message };
+          resume = { numberId: row.id, chosen, endUserType, active: false, error: (e as Error).message };
         }
       }
     }
@@ -60,14 +61,14 @@ export default async function NewNumberPage({
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Buy a number</h1>
-        <p className="text-sm text-slate-500">Pick the number, tell Ofcom who owns it, and it goes live as soon as the registration is approved.</p>
+        <p className="text-sm text-slate-500">Pick the number; it is registered to your business from the details you saved once, and goes live as soon as Ofcom approves.</p>
       </div>
       <BuyFlow
         clientName={client.name}
         contactEmail={session.email}
         approvedTypes={approvedTypes}
         pendingTypes={pendingTypes}
-        prefill={last}
+        hasProfile={!!profile}
         initialType={initialType}
         initialContains={initialContains}
         resume={resume}

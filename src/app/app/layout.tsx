@@ -7,6 +7,7 @@ import { switchClient } from "./actions";
 const NAV = [
   { href: "/app", label: "Overview" },
   { href: "/app/numbers", label: "Numbers" },
+  { href: "/app/business", label: "Business" },
   { href: "/app/routing", label: "Routing" },
   { href: "/app/calls", label: "Calls" },
   { href: "/app/softphone", label: "Softphone" },
