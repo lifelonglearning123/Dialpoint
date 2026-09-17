@@ -80,7 +80,20 @@ async function requestOrigin() {
  * (Phase 3): with none, the caller gets a Stripe Checkout URL and comes back to
  * /app/numbers/new?checkout=success&numberId=… which calls resumeAfterCheckout.
  */
-async function continueAfterReserve(clientId: string, numberId: string, type: NumberType, endUserType: EndUserType, email: string): Promise<ReserveOutcome> {
+async function continueAfterReserve(
+  clientId: string,
+  numberId: string,
+  type: NumberType,
+  endUserType: EndUserType,
+  email: string,
+  opts: { revalidate: boolean } = { revalidate: true },
+): Promise<ReserveOutcome> {
+  // revalidatePath is only legal inside a server action. resumeAfterCheckout
+  // runs this during the page render (back from Stripe), where the page is
+  // already rendering fresh data, so it passes revalidate: false.
+  const touch = (...paths: string[]) => {
+    if (opts.revalidate) for (const p of paths) revalidatePath(p);
+  };
   const origin = await requestOrigin();
   const gate = await ensureSubscription(clientId, {
     successUrl: `${origin}/app/numbers/new?checkout=success&numberId=${numberId}&endUserType=${endUserType}`,
@@ -92,8 +105,7 @@ async function continueAfterReserve(clientId: string, numberId: string, type: Nu
 
   if (await approvedBundleFor(clientId, type)) {
     await purchaseNumber(numberId);
-    revalidatePath("/app");
-    revalidatePath("/app/numbers");
+    touch("/app", "/app/numbers");
     return { numberId, active: true, endUserType };
   }
 
@@ -101,18 +113,17 @@ async function continueAfterReserve(clientId: string, numberId: string, type: Nu
   // (entered once under /app/business). Nothing is asked for here.
   const profile = await getBusinessProfile(clientId);
   if (!profile) {
-    revalidatePath("/app/numbers");
+    touch("/app/numbers");
     return { numberId, active: false, endUserType, needsProfile: true };
   }
   const already = await registrationStatus(clientId);
   const current = already.find((r) => r.type === registrableTypeFor(type));
   if (current && (current.state === "pending-review" || current.state === "in-review")) {
-    revalidatePath("/app/numbers");
+    touch("/app/numbers");
     return { numberId, active: false, endUserType: profile.endUserType as EndUserType, registration: { submitted: true, failures: [], bundleId: current.bundleId } };
   }
   const reg = await registerType(clientId, type);
-  revalidatePath("/app/numbers");
-  revalidatePath("/app/business");
+  touch("/app/numbers", "/app/business");
   return {
     numberId,
     active: false,
@@ -146,7 +157,8 @@ export async function resumeAfterCheckout(numberId: string, endUserType: EndUser
   if (!row) throw new Error("Number not found.");
   const paid = await confirmCheckout(client.id);
   if (!paid) throw new Error("Payment was not completed. Try again to add a card.");
-  const outcome = row.status === "active" ? { numberId, active: true, endUserType } : await continueAfterReserve(client.id, row.id, row.type, endUserType, session.email);
+  const outcome =
+    row.status === "active" ? { numberId, active: true, endUserType } : await continueAfterReserve(client.id, row.id, row.type, endUserType, session.email, { revalidate: false });
   return { ...outcome, e164: row.e164, type: row.type, locality: row.locality };
 }
 
