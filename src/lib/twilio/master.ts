@@ -67,10 +67,23 @@ export async function ensureSubaccount(clientId: string, clientName: string): Pr
   return { client: twilio(creds.accountSid, creds.authToken), creds, created: true };
 }
 
+/**
+ * The agency's own business can be linked to the MASTER account (its numbers
+ * and approved registrations already live there). Suspending that account
+ * would take every client down, so account-level actions skip it.
+ */
+function isMasterAccount(accountSid: string) {
+  return accountSid === env.TWILIO_ACCOUNT_SID;
+}
+
 /** Non-payment action: calls stop, numbers are kept. Reversible with resumeSubaccount. */
 export async function suspendSubaccount(clientId: string) {
   const creds = await subaccountCreds(clientId);
   if (!creds) return;
+  if (isMasterAccount(creds.accountSid)) {
+    console.error(`[twilio] refusing to suspend the master account for client ${clientId}; handle this one manually`);
+    return;
+  }
   await masterClient().api.v2010.accounts(creds.accountSid).update({ status: "suspended" });
   await db.update(twilioAccounts).set({ status: "suspended" }).where(eq(twilioAccounts.clientId, clientId));
 }
@@ -78,6 +91,7 @@ export async function suspendSubaccount(clientId: string) {
 export async function resumeSubaccount(clientId: string) {
   const creds = await subaccountCreds(clientId);
   if (!creds) return;
+  if (isMasterAccount(creds.accountSid)) return;
   await masterClient().api.v2010.accounts(creds.accountSid).update({ status: "active" });
   await db.update(twilioAccounts).set({ status: "active" }).where(eq(twilioAccounts.clientId, clientId));
 }
