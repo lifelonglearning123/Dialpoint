@@ -235,8 +235,8 @@ export function BuyFlow(props: {
         <div className="card space-y-4">
           <h2 className="font-semibold">Add a card for {formatUk(chosen.e164)}</h2>
           <p className="text-sm text-slate-600">
-            Numbers are billed monthly, charged automatically to a card you save once. The first invoice is raised at the end of the month the number goes
-            live, and each of these appears as its own line on it:
+            Numbers are billed monthly, charged automatically to a card you save once. The first month&apos;s number and hosting charges are taken now; from then
+            on you are charged on the same day each month for the month ahead plus the minutes used, and each of these appears as its own line on the invoice:
           </p>
           <ul className="list-disc space-y-1 pl-5 text-sm text-slate-600">
             <li>

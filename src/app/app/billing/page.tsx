@@ -148,7 +148,7 @@ export default async function BillingPage() {
           <section className="card">
             <h2 className="font-semibold">Invoices</h2>
             {invoices.length === 0 ? (
-              <p className="mt-2 text-sm text-slate-500">No invoices yet. The first one is raised at the end of this billing period.</p>
+              <p className="mt-2 text-sm text-slate-500">No invoices to show yet. Invoices are raised when you add your card and then on the same day each month; the next is due {summary.periodEnd.toLocaleDateString("en-GB", { day: "numeric", month: "long" })}.</p>
             ) : (
               <table className="mt-3 w-full text-sm">
                 <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
