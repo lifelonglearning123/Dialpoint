@@ -7,7 +7,7 @@ import { isAgency, requireSession } from "@/lib/auth";
 import { floorFor, formatMinor, formatRate, fromMonthly, NUMBER_TYPES, NUMBER_TYPE_LABELS, surchargePercent, TWILIO_GBP } from "@/lib/billing/pricing";
 import { stripeConfigured } from "@/lib/billing/stripe";
 import { PlanForm } from "./plan-form";
-import { setDefaultPlan, togglePlanActive } from "./actions";
+import { retryPublish, setDefaultPlan, togglePlanActive } from "./actions";
 
 export const metadata = { title: "Plans" };
 export const dynamic = "force-dynamic";
@@ -57,9 +57,20 @@ export default async function PlansPage() {
                       <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600 ring-1 ring-slate-200">{p.currency}</span>
                       {p.isDefault && <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">default</span>}
                       {!p.active && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600 ring-1 ring-slate-200">inactive</span>}
-                      <span className={`rounded-full px-2 py-0.5 text-xs ring-1 ${p.publishedAt ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-amber-50 text-amber-700 ring-amber-200"}`}>
-                        {p.publishedAt ? "on Stripe" : "not published"}
-                      </span>
+                      {p.publishedAt ? (
+                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700 ring-1 ring-emerald-200">on Stripe</span>
+                      ) : stripeConnected && agency?.chargesEnabled ? (
+                        <form action={retryPublish} className="inline">
+                          <input type="hidden" name="id" value={p.id} />
+                          <button type="submit" className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100" title="Publishing to Stripe failed last time; click to retry">
+                            not on Stripe yet · retry
+                          </button>
+                        </form>
+                      ) : (
+                        <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700 ring-1 ring-amber-200" title="Goes on Stripe automatically once Stripe is connected">
+                          waiting for Stripe
+                        </span>
+                      )}
                     </div>
                     <dl className="mt-2 grid gap-x-6 gap-y-1 text-sm text-slate-600 sm:grid-cols-[auto_1fr]">
                       <dt className="font-medium text-slate-700">Twilio number</dt>
@@ -111,7 +122,7 @@ export default async function PlansPage() {
 
       <section className="card">
         <h2 className="font-semibold">{rows.length === 0 ? "Create your first plan" : "Add another plan"}</h2>
-        <p className="mt-1 text-sm text-slate-600">New customers subscribe to the default plan when they buy their first number. Publish it to Stripe before the first sale.</p>
+        <p className="mt-1 text-sm text-slate-600">New customers subscribe to the default plan when they buy their first number. Saving puts the plan on Stripe for you.</p>
         <div className="mt-4">
           <PlanForm stripeConnected={stripeConnected} defaultCurrency={session.agency.currency} />
         </div>

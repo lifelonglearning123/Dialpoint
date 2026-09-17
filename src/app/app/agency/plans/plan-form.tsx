@@ -14,7 +14,7 @@ import {
   type CarrierMonthly,
   type UsageMode,
 } from "@/lib/billing/pricing";
-import { publishPlanAction, savePlan, type PlanResult } from "./actions";
+import { savePlan, type PlanResult } from "./actions";
 
 export type PlanRow = {
   id: string;
@@ -75,14 +75,6 @@ export function PlanForm({ plan, stripeConnected, defaultCurrency = "GBP", onDon
     });
   };
 
-  const publish = () => {
-    if (!plan) return;
-    setResult(null);
-    const fd = new FormData();
-    fd.set("id", plan.id);
-    start(async () => setResult(await publishPlanAction(fd)));
-  };
-
   return (
     <form action={submit} className="space-y-6">
       {plan && <input type="hidden" name="id" value={plan.id} />}
@@ -99,7 +91,12 @@ export function PlanForm({ plan, stripeConnected, defaultCurrency = "GBP", onDon
           )}
         </div>
       )}
-      {result?.ok && <div className="rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Saved.</div>}
+      {result?.ok &&
+        (result.warning ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{result.warning}</div>
+        ) : (
+          <div className="rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-700">Saved and on Stripe.</div>
+        ))}
 
       <div className="grid gap-4 md:grid-cols-3">
         <label className="space-y-1.5">
@@ -229,12 +226,13 @@ export function PlanForm({ plan, stripeConnected, defaultCurrency = "GBP", onDon
         <button type="submit" disabled={pending} className="btn-primary">
           {pending ? "Saving…" : plan ? "Save changes" : "Create plan"}
         </button>
-        {plan && (
-          <button type="button" disabled={pending || !stripeConnected} onClick={publish} className="btn-secondary" title={stripeConnected ? "" : "Connect Stripe in the Signal dashboard first"}>
-            {plan.publishedAt ? "Re-publish prices to Stripe" : "Publish to Stripe"}
-          </button>
-        )}
-        {plan?.publishedAt && <span className="text-xs text-slate-500">Published {new Date(plan.publishedAt).toLocaleDateString("en-GB")}. Existing customers keep their current prices.</span>}
+        <span className="text-xs text-slate-500">
+          {!stripeConnected
+            ? "Saved plans go on Stripe automatically once Stripe is connected."
+            : plan?.publishedAt
+              ? "Changes go to Stripe when you save. Existing customers keep their current prices."
+              : "Goes on Stripe when you save."}
+        </span>
       </div>
     </form>
   );
