@@ -191,15 +191,30 @@ export async function updateNumberLabelAction(formData: FormData): Promise<void>
 }
 
 /** Retry the purchase of a reserved number (e.g. after approval arrived while offline). */
-export async function activateNumberAction(formData: FormData): Promise<void> {
+export type ActivateState = { ok: boolean; error?: string } | null;
+
+/**
+ * Buy a reserved number whose registration is approved. Returns the failure
+ * instead of throwing, so the page shows Twilio's reason rather than a crash.
+ */
+export async function activateNumberAction(_prev: ActivateState, formData: FormData): Promise<ActivateState> {
+  const numberId = String(formData.get("numberId") ?? "");
+  // Outside the try: requireSession redirects by throwing, which must not be caught.
   const session = await requireSession();
   requireManage(session);
-  const numberId = String(formData.get("numberId") ?? "");
-  const row = await db.query.numbers.findFirst({ where: eq(numbers.id, numberId) });
-  if (!row) throw new Error("Number not found.");
-  await requireClientAccess(session, row.clientId);
-  await purchaseNumber(numberId);
+  try {
+    const row = await db.query.numbers.findFirst({ where: eq(numbers.id, numberId) });
+    if (!row) throw new Error("Number not found.");
+    await requireClientAccess(session, row.clientId);
+    await purchaseNumber(numberId);
+  } catch (e) {
+    const err = e as Error & { code?: number; moreInfo?: string };
+    console.error(`[numbers] activate ${numberId} failed:`, err.code ?? "", err.message);
+    const code = err.code ? ` (Twilio error ${err.code})` : "";
+    return { ok: false, error: `${err.message}${code}` };
+  }
   revalidatePath(`/app/numbers/${numberId}`);
   revalidatePath("/app/numbers");
   revalidatePath("/app");
+  return { ok: true };
 }

@@ -8,7 +8,8 @@ import { currentClient } from "@/lib/clients";
 import { StatusPill, formatUk, typeLabel } from "@/lib/format";
 import { reservedContext, reservedReason } from "@/lib/numbers/reserved";
 import { registrableTypeFor } from "@/lib/twilio/business";
-import { activateNumberAction, releaseNumberAction, updateNumberLabelAction } from "../actions";
+import { releaseNumberAction, updateNumberLabelAction } from "../actions";
+import { ActivateButton } from "../activate-button";
 import { ReleaseButton } from "../release-button";
 
 export default async function NumberDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -80,12 +81,7 @@ export default async function NumberDetailPage({ params }: { params: Promise<{ i
             </Link>
           )}
           {manage && reason?.kind === "ready" && bundle?.status === "twilio-approved" && (
-            <form action={activateNumberAction}>
-              <input type="hidden" name="numberId" value={n.id} />
-              <button type="submit" className="btn-secondary">
-                Activate now
-              </button>
-            </form>
+            <ActivateButton numberId={n.id} />
           )}
         </section>
 
