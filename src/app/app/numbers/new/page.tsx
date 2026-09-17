@@ -54,6 +54,11 @@ export default async function NewNumberPage({
         try {
           const r = await resumeAfterCheckout(row.id, endUserType);
           resume = { numberId: r.numberId, chosen, endUserType, active: r.active, needsProfile: r.needsProfile, registration: r.registration };
+          if (r.unpaid) {
+            // Only an error when the browser has just come back from Stripe;
+            // arriving from "Add a card to finish" is simply the card step.
+            resume = { ...resume, needsCard: true, error: sp.checkout === "success" ? "Stripe has not confirmed the payment yet. If you paid, refresh in a minute; otherwise add a card to continue." : undefined };
+          }
           if (r.checkoutUrl) resume = { ...resume, cancelled: true, error: "Add a card to continue." };
         } catch (e) {
           resume = { numberId: row.id, chosen, endUserType, active: false, error: (e as Error).message };

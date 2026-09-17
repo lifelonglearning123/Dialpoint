@@ -62,6 +62,8 @@ export type ReserveOutcome = {
   checkoutUrl?: string;
   /** No business details saved yet: send the customer to /app/business once. */
   needsProfile?: boolean;
+  /** No card on file yet (not an error: the customer simply has not paid). */
+  unpaid?: boolean;
   /** The Ofcom registration attempted from the stored details for this type. */
   registration?: { submitted: boolean; failures: EvaluationFailure[]; bundleId: string | null };
 };
@@ -156,7 +158,7 @@ export async function resumeAfterCheckout(numberId: string, endUserType: EndUser
   const row = await db.query.numbers.findFirst({ where: and(eq(numbers.id, numberId), eq(numbers.clientId, client.id)) });
   if (!row) throw new Error("Number not found.");
   const paid = await confirmCheckout(client.id);
-  if (!paid) throw new Error("Payment was not completed. Try again to add a card.");
+  if (!paid) return { numberId, active: false, endUserType, unpaid: true, e164: row.e164, type: row.type, locality: row.locality };
   const outcome =
     row.status === "active" ? { numberId, active: true, endUserType } : await continueAfterReserve(client.id, row.id, row.type, endUserType, session.email, { revalidate: false });
   return { ...outcome, e164: row.e164, type: row.type, locality: row.locality };

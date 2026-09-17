@@ -38,6 +38,8 @@ export type ResumeState = {
   registration?: ReserveOutcome["registration"];
   /** Card step was cancelled at Stripe. */
   cancelled?: boolean;
+  /** No card on file yet; show the card step without an error. */
+  needsCard?: boolean;
   error?: string;
 };
 
@@ -61,7 +63,7 @@ export function BuyFlow(props: {
     pricing ? `Twilio ${formatMinor(pricing.carrier[t] ?? 0, pricing.currency)} + hosting ${formatMinor(pricing.hosting, pricing.currency)} per month` : "Priced per number type";
   const initialStep = (r: ResumeState | undefined): Step => {
     if (!r) return "type";
-    if (r.cancelled || r.error) return "card";
+    if (r.cancelled || r.needsCard || r.error) return "card";
     if (r.active) return "active";
     if (r.registration?.submitted) return "verifying";
     return "register";
@@ -234,7 +236,9 @@ export function BuyFlow(props: {
 
       {step === "card" && chosen && (
         <div className="card space-y-4">
-          <h2 className="font-semibold">Add a card for {formatUk(chosen.e164)}</h2>
+          <h2 className="font-semibold">
+            Add a card for {props.clientName} · {formatUk(chosen.e164)}
+          </h2>
           <p className="text-sm text-slate-600">
             Numbers are billed monthly, charged automatically to a card you save once. The first month&apos;s number and hosting charges are taken now; from then
             on you are charged on the same day each month for the month ahead plus the minutes used, and each of these appears as its own line on the invoice:
