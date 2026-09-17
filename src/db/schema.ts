@@ -309,7 +309,14 @@ export const subscriptionState = tb.enum("subscription_state", [
 
 type NumberTypeValue = (typeof numberType.enumValues)[number];
 /** Stripe Product per invoice line: hosting, carrier:<type>, usage, freephone, voicemail. */
-export type PriceRole = "hosting" | `carrier:${NumberTypeValue}` | "usage" | "freephone" | "voicemail";
+export type PriceRole = "hosting" | `carrier:${NumberTypeValue}` | "usage" | "freephone" | "voicemail" | "cost";
+
+/**
+ * How call minutes are billed. `flat`: the plan's per-minute rates.
+ * `passthrough`: Twilio's actual charge for each leg, to the hundredth of a
+ * penny, with nothing added except the invoice-level surcharge.
+ */
+export const usageMode = tb.enum("usage_mode", ["flat", "passthrough"]);
 
 /**
  * Retail plans, one or more per agency; prices set by the agency above the
@@ -339,6 +346,7 @@ export const plans = tb.table(
     voicemailTranscribePence: integer("voicemail_transcribe_pence").notNull().default(0),
     /** Card processing surcharge in basis points (300 = 3%), applied to every invoice. */
     surchargeBps: integer("surcharge_bps").notNull().default(300),
+    usageMode: usageMode("usage_mode").notNull().default("flat"),
     active: boolean("active").notNull().default(true),
     isDefault: boolean("is_default").notNull().default(false),
     // Stripe objects on the agency's connected account, created when the plan is published.
@@ -351,6 +359,9 @@ export const plans = tb.table(
     stripeFreephoneMeterId: text("stripe_freephone_meter_id"),
     stripeVoicemailPriceId: text("stripe_voicemail_price_id"),
     stripeVoicemailMeterId: text("stripe_voicemail_meter_id"),
+    /** Pass-through plans: one meter whose value is Twilio's cost in hundredths of a penny, priced at 0.01p a unit. */
+    stripeCostMeterId: text("stripe_cost_meter_id"),
+    stripeCostPriceId: text("stripe_cost_price_id"),
     /** Stripe TaxRate carrying the surcharge percentage (immutable, replaced when the % changes). */
     stripeSurchargeTaxRateId: text("stripe_surcharge_tax_rate_id"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
@@ -383,6 +394,7 @@ export const subscriptions = tb.table(
     usageItemId: text("usage_item_id"),
     freephoneItemId: text("freephone_item_id"),
     voicemailItemId: text("voicemail_item_id"),
+    costItemId: text("cost_item_id"),
     state: subscriptionState("state").notNull().default("incomplete"),
     currentPeriodStart: timestamp("current_period_start", { withTimezone: true }),
     currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
@@ -411,6 +423,11 @@ export const usageLedger = tb.table(
     quantity: integer("quantity").notNull(),
     seconds: integer("seconds"),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Twilio's actual charge for this leg in hundredths of a penny (or cent), once Twilio has priced it. */
+    costHundredths: integer("cost_hundredths"),
+    /** Currency Twilio priced the leg in (ISO 4217). */
+    priceUnit: text("price_unit"),
+    pricedAt: timestamp("priced_at", { withTimezone: true }),
     stripeMeterEventId: text("stripe_meter_event_id"),
     pushedAt: timestamp("pushed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -151,8 +151,17 @@ export default async function StorefrontPage() {
                     <li>
                       Twilio number charge: {NUMBER_TYPES.map((t) => `${NUMBER_TYPE_LABELS[t]} ${formatMinor(p.carrierMonthlyPence[t] ?? 0, p.currency)}`).join(", ")} per month
                     </li>
-                    <li>{p.includedMinutes > 0 ? `${p.includedMinutes} minutes included each month, then ` : "Twilio usage "}{formatRate(p.perMinutePence, p.currency)} per minute</li>
-                    <li>0800 inbound at {formatRate(p.freephoneInboundPence, p.currency)} per minute</li>
+                    {p.usageMode === "passthrough" ? (
+                      <li>Calls at exactly what Twilio charges, nothing added</li>
+                    ) : (
+                      <>
+                        <li>
+                          {p.includedMinutes > 0 ? `${p.includedMinutes} minutes included each month, then ` : "Twilio usage "}
+                          {formatRate(p.perMinutePence, p.currency)} per minute
+                        </li>
+                        <li>0800 inbound at {formatRate(p.freephoneInboundPence, p.currency)} per minute</li>
+                      </>
+                    )}
                     <li>{p.voicemailTranscribePence > 0 ? `Voicemail transcription ${formatRate(p.voicemailTranscribePence, p.currency)} each` : "Voicemail transcription included"}</li>
                     {p.surchargeBps > 0 && <li>{surchargePercent(p.surchargeBps)}% card processing surcharge</li>}
                   </ul>

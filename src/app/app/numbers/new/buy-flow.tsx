@@ -26,6 +26,7 @@ export type PlanPricing = {
   includedMinutes: number;
   perMinute: number;
   surchargeBps: number;
+  usageMode: "flat" | "passthrough";
 };
 
 export type ResumeState = {
@@ -243,10 +244,14 @@ export function BuyFlow(props: {
               Twilio monthly number charge{pricing ? `: ${formatMinor(pricing.carrier[chosen.type] ?? 0, pricing.currency)} for a ${typeLabel(chosen.type).toLowerCase()} number` : " for each number"}.
             </li>
             <li>Monthly hosting charge{pricing ? `: ${formatMinor(pricing.hosting, pricing.currency)} per active number` : " per active number"}.</li>
-            <li>
-              Twilio usage{pricing ? ` at ${formatRate(pricing.perMinute, pricing.currency)} per minute` : ""}: forwarded, inbound and browser minutes
-              {pricing && pricing.includedMinutes > 0 ? ` over your ${pricing.includedMinutes} included` : ""}, plus 0800 inbound minutes.
-            </li>
+            {pricing?.usageMode === "passthrough" ? (
+              <li>Twilio call charges at exactly what Twilio charged for each call, nothing added.</li>
+            ) : (
+              <li>
+                Twilio usage{pricing ? ` at ${formatRate(pricing.perMinute, pricing.currency)} per minute` : ""}: forwarded, inbound and browser minutes
+                {pricing && pricing.includedMinutes > 0 ? ` over your ${pricing.includedMinutes} included` : ""}, plus 0800 inbound minutes.
+              </li>
+            )}
             {pricing && pricing.surchargeBps > 0 && <li>A {surchargePercent(pricing.surchargeBps)}% card processing surcharge on the invoice total.</li>}
             <li>Change your card or view invoices any time under Billing. Cancel any month.</li>
           </ul>

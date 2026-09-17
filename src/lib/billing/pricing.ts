@@ -68,6 +68,13 @@ export function floorFor(currency: string): Floor {
   };
 }
 
+export const USAGE_MODES = ["flat", "passthrough"] as const;
+export type UsageMode = (typeof USAGE_MODES)[number];
+
+export function asUsageMode(v: unknown): UsageMode {
+  return v === "passthrough" ? "passthrough" : "flat";
+}
+
 /** The fields the floor check needs; a `plans` row satisfies it. */
 export type PlanPricing = {
   currency: string;
@@ -77,6 +84,7 @@ export type PlanPricing = {
   perMinutePence: number;
   freephoneInboundPence: number;
   surchargeBps: number;
+  usageMode?: UsageMode;
 };
 
 export function wholesaleFloor(plan: PlanPricing) {
@@ -88,6 +96,15 @@ export function wholesaleFloor(plan: PlanPricing) {
     if (amount < floor.carrierMonthly[t]) {
       problems.push(`Twilio number charge for ${NUMBER_TYPE_LABELS[t]} must be at least ${formatMinor(floor.carrierMonthly[t], cur)} (Twilio's monthly cost).`);
     }
+  }
+  if (plan.surchargeBps < 0 || plan.surchargeBps > 2000) {
+    problems.push("The card processing surcharge must be between 0% and 20%.");
+  }
+  if (plan.usageMode === "passthrough") {
+    // Calls bill at Twilio's own price, which is in the master account's
+    // currency (GBP), so there is no per-minute rate to check.
+    if (asCurrency(plan.currency) !== "GBP") problems.push("Pass-through plans must be in GBP: Twilio bills call charges in GBP and they are passed on unchanged.");
+    return { ok: problems.length === 0, problems };
   }
   if (plan.perMinutePence < floor.perMinute) {
     problems.push(`Usage per minute must be at least ${formatRate(floor.perMinute, cur)} (forwarding to a UK mobile costs about 3p a minute plus 1p inbound).`);
@@ -102,10 +119,12 @@ export function wholesaleFloor(plan: PlanPricing) {
     const maxIncluded = Math.max(0, Math.floor(plan.hostingMonthlyPence / floor.perMinute));
     problems.push(`At ${formatMinor(plan.hostingMonthlyPence, cur)} hosting a month only ${maxIncluded} included minutes are covered (each costs about ${formatRate(floor.perMinute, cur)} of carrier time).`);
   }
-  if (plan.surchargeBps < 0 || plan.surchargeBps > 2000) {
-    problems.push("The card processing surcharge must be between 0% and 20%.");
-  }
   return { ok: problems.length === 0, problems };
+}
+
+/** Hundredths of a penny → pence, for display. */
+export function hundredthsToMinor(hundredths: number) {
+  return Math.round(hundredths / 100);
 }
 
 /** Cheapest "per number per month" a customer can pay on this plan: hosting + the cheapest carrier charge. */

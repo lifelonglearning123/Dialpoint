@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import type Stripe from "stripe";
+import Stripe from "stripe";
 import { db } from "@/db/client";
 import { plans, type PriceRole } from "@/db/schema";
 import { agencies } from "@/db/shared";
@@ -18,14 +18,21 @@ async function agencyStripeAccount(agencyId: string) {
   return { account: a.stripeAccountId, name: a.name };
 }
 
+const METER_CUSTOMER = { type: "by_id", event_payload_key: "stripe_customer_id" } as const;
+const METER_VALUE = { event_payload_key: "value" } as const;
+
 /**
  * Create the Stripe objects for a plan on the agency's connected account. One
  * Product per invoice line so the customer's invoice itemises exactly what was
  * agreed: "Twilio monthly number charge — Local", "<Agency> monthly hosting
- * charge", "Twilio usage charge — per minute", and so on. Then:
+ * charge", "Twilio usage charge", and so on. Then:
  *   - a licensed monthly Price per number type (the Twilio charge),
  *   - a licensed monthly Price for hosting,
- *   - Billing Meters + metered Prices for minutes / 0800 minutes / transcriptions,
+ *   - usage: flat plans get Billing Meters + metered Prices for minutes and
+ *     0800 minutes; pass-through plans get ONE meter whose value is Twilio's
+ *     cost in hundredths of a penny, priced at 0.01p a unit, so the invoice
+ *     line is Twilio's charge to the penny,
+ *   - a metered Price for voicemail transcriptions when charged,
  *   - a TaxRate carrying the card-processing surcharge percentage.
  * Idempotent: any id already stored is reused, so re-publishing only fills gaps.
  *
@@ -42,7 +49,8 @@ export async function publishPlan(planId: string) {
   const s = stripe();
   const opts = forAccount(account);
   const currency = plan.currency.toLowerCase();
-  const suffix = plan.id.slice(0, 8);
+  const names = meterEventNames(plan);
+  const passthrough = plan.usageMode === "passthrough";
 
   const productIds: Partial<Record<PriceRole, string>> = { ...plan.stripeProductIds };
   const productFor = async (role: PriceRole, productName: string) => {
@@ -53,6 +61,7 @@ export async function publishPlan(planId: string) {
     return product.id;
   };
   const licensed = { interval: "month", usage_type: "licensed" } as const;
+  const metered = (meter: string) => ({ interval: "month", usage_type: "metered", meter }) as const;
 
   // 1. Twilio's monthly number charge: one licensed price per number type.
   const carrierPriceIds = { ...plan.stripeCarrierPriceIds };
@@ -81,92 +90,104 @@ export async function publishPlan(planId: string) {
     ).id;
   }
 
-  // 3a. Minutes meter: forwarded + inbound + softphone minutes share one pool and
-  // one allowance, so they are one meter with graduated tiers.
+  // 3. Usage.
   let usageMeterId = plan.stripeUsageMeterId;
-  if (!usageMeterId) {
-    const meter = await s.billing.meters.create(
-      {
-        display_name: `${plan.name} minutes`,
-        event_name: `tb_minutes_${suffix}`,
-        default_aggregation: { formula: "sum" },
-        customer_mapping: { type: "by_id", event_payload_key: "stripe_customer_id" },
-        value_settings: { event_payload_key: "value" },
-      },
-      opts,
-    );
-    usageMeterId = meter.id;
-  }
-  const usagePriceId =
-    plan.stripeUsagePriceId && (await tiersMatch(s, opts, plan.stripeUsagePriceId, plan.includedMinutes, plan.perMinutePence))
-      ? plan.stripeUsagePriceId
-      : (
-          await s.prices.create(
-            {
-              product: await productFor("usage", "Twilio usage charge — per minute"),
-              currency,
-              recurring: { interval: "month", usage_type: "metered", meter: usageMeterId },
-              billing_scheme: "tiered",
-              tiers_mode: "graduated",
-              tiers:
-                plan.includedMinutes > 0
-                  ? [
-                      { up_to: plan.includedMinutes, unit_amount: 0 },
-                      { up_to: "inf", unit_amount: plan.perMinutePence },
-                    ]
-                  : [{ up_to: "inf", unit_amount: plan.perMinutePence }],
-              nickname: `${plan.name} minutes (${plan.includedMinutes} included)`,
-              metadata: { tb_plan_id: plan.id, tb_role: "usage" },
-            },
-            opts,
-          )
-        ).id;
-
-  // 3b. 0800 inbound: no allowance, flat per minute.
+  let usagePriceId = plan.stripeUsagePriceId;
   let freephoneMeterId = plan.stripeFreephoneMeterId;
-  if (!freephoneMeterId) {
-    const meter = await s.billing.meters.create(
-      {
-        display_name: `${plan.name} 0800 inbound minutes`,
-        event_name: `tb_freephone_minutes_${suffix}`,
-        default_aggregation: { formula: "sum" },
-        customer_mapping: { type: "by_id", event_payload_key: "stripe_customer_id" },
-        value_settings: { event_payload_key: "value" },
-      },
-      opts,
-    );
-    freephoneMeterId = meter.id;
-  }
-  const freephonePriceId =
-    plan.stripeFreephonePriceId && (await priceAmount(s, opts, plan.stripeFreephonePriceId)) === plan.freephoneInboundPence
-      ? plan.stripeFreephonePriceId
-      : (
-          await s.prices.create(
-            {
-              product: await productFor("freephone", "Twilio usage charge — 0800 inbound per minute"),
-              currency,
-              unit_amount: plan.freephoneInboundPence,
-              recurring: { interval: "month", usage_type: "metered", meter: freephoneMeterId },
-              nickname: `${plan.name} 0800 inbound`,
-              metadata: { tb_plan_id: plan.id, tb_role: "freephone" },
-            },
-            opts,
-          )
-        ).id;
+  let freephonePriceId = plan.stripeFreephonePriceId;
+  let costMeterId = plan.stripeCostMeterId;
+  let costPriceId = plan.stripeCostPriceId;
 
-  // 3c. Voicemail transcription, only when the plan charges for it.
+  if (passthrough) {
+    // 3p. Twilio's charge, passed through: value = cost in hundredths of a penny.
+    if (!costMeterId) {
+      const meter = await s.billing.meters.create(
+        { display_name: `${plan.name} Twilio call charges (0.01p units)`, event_name: names.cost, default_aggregation: { formula: "sum" }, customer_mapping: METER_CUSTOMER, value_settings: METER_VALUE },
+        opts,
+      );
+      costMeterId = meter.id;
+    }
+    if (!costPriceId) {
+      costPriceId = (
+        await s.prices.create(
+          {
+            product: await productFor("cost", "Twilio call charges — at cost"),
+            currency,
+            unit_amount_decimal: Stripe.Decimal.from("0.01"), // 0.01p per unit; meter value is cost in hundredths of a penny
+            recurring: metered(costMeterId),
+            nickname: `${plan.name} Twilio call charges at cost`,
+            metadata: { tb_plan_id: plan.id, tb_role: "cost" },
+          },
+          opts,
+        )
+      ).id;
+    }
+  } else {
+    // 3a. Minutes meter: forwarded + inbound + softphone minutes share one pool and
+    // one allowance, so they are one meter with graduated tiers.
+    if (!usageMeterId) {
+      const meter = await s.billing.meters.create(
+        { display_name: `${plan.name} minutes`, event_name: names.minutes, default_aggregation: { formula: "sum" }, customer_mapping: METER_CUSTOMER, value_settings: METER_VALUE },
+        opts,
+      );
+      usageMeterId = meter.id;
+    }
+    if (!usagePriceId || !(await tiersMatch(s, opts, usagePriceId, plan.includedMinutes, plan.perMinutePence))) {
+      usagePriceId = (
+        await s.prices.create(
+          {
+            product: await productFor("usage", "Twilio usage charge — per minute"),
+            currency,
+            recurring: metered(usageMeterId),
+            billing_scheme: "tiered",
+            tiers_mode: "graduated",
+            tiers:
+              plan.includedMinutes > 0
+                ? [
+                    { up_to: plan.includedMinutes, unit_amount: 0 },
+                    { up_to: "inf", unit_amount: plan.perMinutePence },
+                  ]
+                : [{ up_to: "inf", unit_amount: plan.perMinutePence }],
+            nickname: `${plan.name} minutes (${plan.includedMinutes} included)`,
+            metadata: { tb_plan_id: plan.id, tb_role: "usage" },
+          },
+          opts,
+        )
+      ).id;
+    }
+
+    // 3b. 0800 inbound: no allowance, flat per minute.
+    if (!freephoneMeterId) {
+      const meter = await s.billing.meters.create(
+        { display_name: `${plan.name} 0800 inbound minutes`, event_name: names.freephone, default_aggregation: { formula: "sum" }, customer_mapping: METER_CUSTOMER, value_settings: METER_VALUE },
+        opts,
+      );
+      freephoneMeterId = meter.id;
+    }
+    if (!freephonePriceId || (await priceAmount(s, opts, freephonePriceId)) !== plan.freephoneInboundPence) {
+      freephonePriceId = (
+        await s.prices.create(
+          {
+            product: await productFor("freephone", "Twilio usage charge — 0800 inbound per minute"),
+            currency,
+            unit_amount: plan.freephoneInboundPence,
+            recurring: metered(freephoneMeterId),
+            nickname: `${plan.name} 0800 inbound`,
+            metadata: { tb_plan_id: plan.id, tb_role: "freephone" },
+          },
+          opts,
+        )
+      ).id;
+    }
+  }
+
+  // 3c. Voicemail transcription, only when the plan charges for it (not a Twilio cost, so the same in both modes).
   let voicemailMeterId = plan.stripeVoicemailMeterId;
   let voicemailPriceId = plan.stripeVoicemailPriceId;
   if (plan.voicemailTranscribePence > 0) {
     if (!voicemailMeterId) {
       const meter = await s.billing.meters.create(
-        {
-          display_name: `${plan.name} voicemail transcriptions`,
-          event_name: `tb_voicemail_${suffix}`,
-          default_aggregation: { formula: "sum" },
-          customer_mapping: { type: "by_id", event_payload_key: "stripe_customer_id" },
-          value_settings: { event_payload_key: "value" },
-        },
+        { display_name: `${plan.name} voicemail transcriptions`, event_name: names.voicemail, default_aggregation: { formula: "sum" }, customer_mapping: METER_CUSTOMER, value_settings: METER_VALUE },
         opts,
       );
       voicemailMeterId = meter.id;
@@ -178,7 +199,7 @@ export async function publishPlan(planId: string) {
             product: await productFor("voicemail", "Voicemail transcription"),
             currency,
             unit_amount: plan.voicemailTranscribePence,
-            recurring: { interval: "month", usage_type: "metered", meter: voicemailMeterId },
+            recurring: metered(voicemailMeterId),
             nickname: `${plan.name} voicemail transcription`,
             metadata: { tb_plan_id: plan.id, tb_role: "voicemail" },
           },
@@ -222,6 +243,8 @@ export async function publishPlan(planId: string) {
       stripeUsagePriceId: usagePriceId,
       stripeFreephoneMeterId: freephoneMeterId,
       stripeFreephonePriceId: freephonePriceId,
+      stripeCostMeterId: costMeterId,
+      stripeCostPriceId: costPriceId,
       stripeVoicemailMeterId: voicemailMeterId,
       stripeVoicemailPriceId: voicemailPriceId,
       stripeSurchargeTaxRateId: surchargeTaxRateId,
@@ -234,11 +257,11 @@ export async function publishPlan(planId: string) {
 
 /** True when every Stripe object the checkout needs exists for this plan. */
 export function planFullyPublished(plan: Plan) {
+  const usageReady = plan.usageMode === "passthrough" ? !!plan.stripeCostPriceId : !!plan.stripeUsagePriceId && !!plan.stripeFreephonePriceId;
   return (
     !!plan.publishedAt &&
     !!plan.stripeHostingPriceId &&
-    !!plan.stripeUsagePriceId &&
-    !!plan.stripeFreephonePriceId &&
+    usageReady &&
     NUMBER_TYPES.every((t) => !!plan.stripeCarrierPriceIds[t]) &&
     (plan.surchargeBps === 0 || !!plan.stripeSurchargeTaxRateId) &&
     (plan.voicemailTranscribePence === 0 || !!plan.stripeVoicemailPriceId)
@@ -275,12 +298,13 @@ async function tiersMatch(s: Stripe, opts: Stripe.RequestOptions, priceId: strin
 }
 
 /** Meter event names for a published plan (what the cron sends). */
-export function meterEventNames(plan: Plan) {
+export function meterEventNames(plan: Pick<Plan, "id">) {
   const suffix = plan.id.slice(0, 8);
   return {
     minutes: `tb_minutes_${suffix}`,
     freephone: `tb_freephone_minutes_${suffix}`,
     voicemail: `tb_voicemail_${suffix}`,
+    cost: `tb_cost_${suffix}`,
   };
 }
 

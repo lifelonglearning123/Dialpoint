@@ -70,7 +70,7 @@ export default async function PlansPage() {
                       </dd>
                       <dt className="font-medium text-slate-700">Twilio usage</dt>
                       <dd>
-                        {formatRate(p.perMinutePence, p.currency)}/min · 0800 inbound {formatRate(p.freephoneInboundPence, p.currency)}/min
+                        {p.usageMode === "passthrough" ? "exact pass-through of Twilio's call charges" : `${formatRate(p.perMinutePence, p.currency)}/min · 0800 inbound ${formatRate(p.freephoneInboundPence, p.currency)}/min`}
                         {p.voicemailTranscribePence ? ` · voicemail ${formatRate(p.voicemailTranscribePence, p.currency)} each` : ""}
                       </dd>
                       <dt className="font-medium text-slate-700">Surcharge</dt>

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { db } from "@/db/client";
 import { plans } from "@/db/schema";
 import { publishPlan } from "@/lib/billing/plans";
-import { CURRENCIES, wholesaleFloor } from "@/lib/billing/pricing";
+import { CURRENCIES, floorFor, USAGE_MODES, wholesaleFloor } from "@/lib/billing/pricing";
 import { isAgency, requireSession } from "@/lib/auth";
 
 export type PlanResult = { ok: true } | { ok: false; error: string; problems?: string[] };
@@ -37,6 +37,7 @@ const schema = z.object({
   freephoneInboundPence: money,
   voicemailTranscribePence: money,
   surchargeBps: z.number().int().min(0).max(2000),
+  usageMode: z.enum(USAGE_MODES),
 });
 
 /** Create or update a plan; refuses anything under the wholesale floor. */
@@ -60,9 +61,19 @@ export async function savePlan(formData: FormData): Promise<PlanResult> {
       freephoneInboundPence: minor(formData.get("freephoneInbound")),
       voicemailTranscribePence: minor(formData.get("voicemailTranscribe")),
       surchargeBps: percentToBps(formData.get("surchargePercent")),
+      usageMode: formData.get("usageMode") === "passthrough" ? "passthrough" : "flat",
     });
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the form." };
     const data = { ...parsed.data, description: parsed.data.description ?? null };
+    if (data.usageMode === "passthrough") {
+      // Calls bill at Twilio's price, so the rate-card fields are unused; keep
+      // them at the GBP floor so nothing downstream sees an under-cost rate.
+      data.currency = "GBP";
+      const floor = floorFor("GBP");
+      data.includedMinutes = 0;
+      data.perMinutePence = floor.perMinute;
+      data.freephoneInboundPence = floor.freephoneInbound;
+    }
 
     if (id) {
       const existing = await db.query.plans.findFirst({ where: and(eq(plans.id, id), eq(plans.agencyId, session.agencyId)) });

@@ -94,8 +94,7 @@ export default async function BillingPage() {
                 Hosting {fmt(plan.hostingMonthlyPence)} per number · Twilio number {NUMBER_TYPES.filter((t) => counts[t] > 0)
                   .map((t) => `${NUMBER_TYPE_LABELS[t]} ${fmt(plan.carrierMonthlyPence[t] ?? 0)}`)
                   .join(", ") || "per type"}{" "}
-                · {plan.includedMinutes > 0 ? `${plan.includedMinutes} min included · ` : ""}
-                {formatRate(plan.perMinutePence, currency)}/min
+                · {summary.passthrough ? "calls at Twilio's cost" : `${plan.includedMinutes > 0 ? `${plan.includedMinutes} min included · ` : ""}${formatRate(plan.perMinutePence, currency)}/min`}
               </div>
             </div>
             <div className="card">
@@ -109,8 +108,9 @@ export default async function BillingPage() {
               <div className="text-xs uppercase tracking-wide text-slate-500">Usage so far</div>
               <div className="mt-1 text-3xl font-semibold">{fmt(summary.projectedPence)}</div>
               <div className="mt-1 text-xs text-slate-500">
-                {summary.minutes.pooled} of {summary.includedMinutes} included minutes used
-                {summary.overageMinutes > 0 ? ` · ${summary.overageMinutes} over` : ""}
+                {summary.passthrough
+                  ? `Twilio's charges, passed on at cost${summary.unpricedLegs > 0 ? ` · ${summary.unpricedLegs} call${summary.unpricedLegs === 1 ? "" : "s"} awaiting Twilio's price` : ""}`
+                  : `${summary.minutes.pooled} of ${summary.includedMinutes} included minutes used${summary.overageMinutes > 0 ? ` · ${summary.overageMinutes} over` : ""}`}
               </div>
             </div>
             <div className="card">
@@ -133,15 +133,22 @@ export default async function BillingPage() {
               <Stat label="Forwarded to your phones" value={`${summary.minutes.forward} min`} />
               <Stat label="Callers' inbound minutes" value={`${summary.minutes.inbound} min`} />
               <Stat label="Browser softphone" value={`${summary.minutes.softphone} min`} />
-              <Stat label="0800 inbound (always billed)" value={`${summary.freephoneMinutes} min`} sub={`${formatRate(plan.freephoneInboundPence, currency)}/min`} />
+              <Stat label="0800 inbound (always billed)" value={`${summary.freephoneMinutes} min`} sub={summary.passthrough ? "at Twilio's cost" : `${formatRate(plan.freephoneInboundPence, currency)}/min`} />
               <Stat label="Voicemails transcribed" value={String(summary.transcriptions)} sub={plan.voicemailTranscribePence ? `${formatRate(plan.voicemailTranscribePence, currency)} each` : "included"} />
             </div>
-            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
-              <div
-                className={`h-full ${summary.overageMinutes > 0 ? "bg-amber-500" : "bg-emerald-500"}`}
-                style={{ width: `${Math.min(100, summary.includedMinutes ? (summary.minutes.pooled / summary.includedMinutes) * 100 : summary.minutes.pooled ? 100 : 0)}%` }}
-              />
-            </div>
+            {summary.passthrough ? (
+              <p className="mt-4 text-xs text-slate-500">
+                Every call is billed at exactly what Twilio charged for it. Twilio prices a call shortly after it ends; a call that has not been priced yet is billed on the next invoice, never
+                estimated.
+              </p>
+            ) : (
+              <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+                <div
+                  className={`h-full ${summary.overageMinutes > 0 ? "bg-amber-500" : "bg-emerald-500"}`}
+                  style={{ width: `${Math.min(100, summary.includedMinutes ? (summary.minutes.pooled / summary.includedMinutes) * 100 : summary.minutes.pooled ? 100 : 0)}%` }}
+                />
+              </div>
+            )}
             <p className="mt-2 text-xs text-slate-500">AI receptionist minutes are billed separately by your AI receptionist subscription and never appear here.</p>
           </section>
 

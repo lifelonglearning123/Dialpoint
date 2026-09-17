@@ -35,7 +35,7 @@ export default async function NewNumberPage({
   const initialContains = initialType && sp.number && /^\+44\d{9,10}$/.test(sp.number) ? sp.number : undefined;
   const [bundles, profile, plan] = await Promise.all([bundlesFor(client.id), getBusinessProfile(client.id), defaultPlanFor(session.agencyId)]);
   const pricing = plan
-    ? { currency: plan.currency, carrier: plan.carrierMonthlyPence, hosting: plan.hostingMonthlyPence, includedMinutes: plan.includedMinutes, perMinute: plan.perMinutePence, surchargeBps: plan.surchargeBps }
+    ? { currency: plan.currency, carrier: plan.carrierMonthlyPence, hosting: plan.hostingMonthlyPence, includedMinutes: plan.includedMinutes, perMinute: plan.perMinutePence, surchargeBps: plan.surchargeBps, usageMode: plan.usageMode }
     : undefined;
   // A local registration covers 03 numbers too, so National shows as registered alongside Local.
   const approvedTypes = bundles.filter((b) => b.status === "twilio-approved").flatMap((b) => typesCoveredBy(b.numberType));

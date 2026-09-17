@@ -108,7 +108,8 @@ export async function ensureSubscription(
   for (const t of NUMBER_TYPES) {
     if (counts[t] > 0) lineItems.push({ price: plan.stripeCarrierPriceIds[t]!, quantity: counts[t] });
   }
-  lineItems.push({ price: plan.stripeUsagePriceId! }, { price: plan.stripeFreephonePriceId! });
+  if (plan.usageMode === "passthrough") lineItems.push({ price: plan.stripeCostPriceId! });
+  else lineItems.push({ price: plan.stripeUsagePriceId! }, { price: plan.stripeFreephonePriceId! });
   if (plan.stripeVoicemailPriceId) lineItems.push({ price: plan.stripeVoicemailPriceId });
 
   const session = await s.checkout.sessions.create(
@@ -174,6 +175,7 @@ export async function linkStripeSubscription(clientId: string, stripeSubscriptio
       usageItemId: itemFor(plan?.stripeUsagePriceId),
       freephoneItemId: itemFor(plan?.stripeFreephonePriceId),
       voicemailItemId: itemFor(plan?.stripeVoicemailPriceId),
+      costItemId: itemFor(plan?.stripeCostPriceId),
       state: mapState(ss.status),
       currentPeriodStart: first ? new Date(first.current_period_start * 1000) : null,
       currentPeriodEnd: first ? new Date(first.current_period_end * 1000) : null,
