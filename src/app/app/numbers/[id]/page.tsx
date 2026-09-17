@@ -10,6 +10,7 @@ import { reservedContext, reservedReason } from "@/lib/numbers/reserved";
 import { registrableTypeFor } from "@/lib/twilio/business";
 import { releaseNumberAction, updateNumberLabelAction } from "../actions";
 import { ActivateButton } from "../activate-button";
+import { RegisterButton } from "../register-button";
 import { ReleaseButton } from "../release-button";
 
 export default async function NumberDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -75,6 +76,7 @@ export default async function NumberDetailPage({ params }: { params: Promise<{ i
               Add a card to finish
             </Link>
           )}
+          {manage && reason?.kind === "register" && <RegisterButton type={registrableTypeFor(n.type)} label={typeLabel(n.type)} />}
           {manage && reason?.kind === "unregistered" && (
             <Link href="/app/business" className="btn-secondary inline-flex">
               Enter business details

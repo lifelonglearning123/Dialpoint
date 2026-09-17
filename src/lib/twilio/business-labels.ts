@@ -3,7 +3,8 @@
  * buy flow and Business form are client components and must not pull the
  * Twilio SDK into the browser bundle.
  */
-export const REGISTRABLE_TYPES = ["local", "mobile", "tollfree"] as const;
+/** Every UK number type has its own Twilio regulation; a Local bundle does NOT cover 03 numbers (Twilio error 21649). */
+export const REGISTRABLE_TYPES = ["local", "national", "mobile", "tollfree"] as const;
 export type RegistrableType = (typeof REGISTRABLE_TYPES)[number];
 
 /** Human labels for Twilio's field machine names (shared by the Business page and the buy flow). */
@@ -36,7 +37,8 @@ export const FIELD_DEFAULTS: Record<string, string> = {
 };
 
 export const TYPE_TITLES: Record<RegistrableType, string> = {
-  local: "Local (01 / 02) and National (03)",
+  local: "Local (01 / 02)",
+  national: "National (03)",
   mobile: "Mobile (07)",
   tollfree: "Freephone (0800)",
 };

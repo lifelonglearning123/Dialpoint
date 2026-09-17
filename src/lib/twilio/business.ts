@@ -21,17 +21,22 @@ import {
  * the stored profile when needed.
  */
 
-/** Types that carry their own Twilio regulation. 03 numbers use the local one. */
+/** Types that carry their own Twilio regulation: all four, including National (03). */
 export { REGISTRABLE_TYPES, type RegistrableType } from "./business-labels";
 import { REGISTRABLE_TYPES, type RegistrableType } from "./business-labels";
 
+/**
+ * The registration a number type is bought under. One-to-one: Twilio rejects
+ * an 03 number bought with a Local bundle (error 21649), so every type
+ * registers separately. Kept as a function so callers stay explicit.
+ */
 export function registrableTypeFor(type: NumberType): RegistrableType {
-  return type === "national" ? "local" : type;
+  return type;
 }
 
-/** The inverse: which number types a registration of this type unlocks. */
+/** Which number types an approved registration of this type unlocks. */
 export function typesCoveredBy(type: NumberType): NumberType[] {
-  return type === "local" ? ["local", "national"] : [type];
+  return [type];
 }
 
 export type BusinessProfile = typeof businessProfiles.$inferSelect;

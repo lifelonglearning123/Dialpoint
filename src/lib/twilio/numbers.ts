@@ -92,9 +92,9 @@ export async function approvedBundleFor(clientId: string, type: NumberType) {
   const rows = await db.query.regulatoryBundles.findMany({
     where: and(eq(regulatoryBundles.clientId, clientId), eq(regulatoryBundles.status, "twilio-approved")),
   });
-  // 03 numbers sit in Twilio's Local inventory; a Local bundle is what Twilio
-  // checks at purchase. Prefer an exact-type bundle, fall back to local for 03.
-  return rows.find((b) => b.numberType === type) ?? (type === "national" ? rows.find((b) => b.numberType === "local") : undefined) ?? null;
+  // Exact type only. 03 numbers are listed in Twilio's Local inventory, but a
+  // Local bundle is rejected at purchase (error 21649): they need a National one.
+  return rows.find((b) => b.numberType === type) ?? null;
 }
 
 /**
@@ -170,9 +170,8 @@ export async function releaseNumber(numberId: string) {
 
 /** Activate every reserved number of a type once its bundle is approved. */
 export async function activateReservedNumbers(clientId: string, type: NumberType) {
-  const types: NumberType[] = type === "local" ? ["local", "national"] : [type];
   const reserved = await db.query.numbers.findMany({
-    where: and(eq(numbers.clientId, clientId), eq(numbers.status, "reserved"), inArray(numbers.type, types)),
+    where: and(eq(numbers.clientId, clientId), eq(numbers.status, "reserved"), inArray(numbers.type, [type])),
   });
   const results: Array<{ numberId: string; ok: boolean; error?: string }> = [];
   for (const r of reserved) {
