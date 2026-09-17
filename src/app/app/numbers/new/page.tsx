@@ -2,9 +2,10 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { numbers } from "@/db/schema";
 import { canManage } from "@/lib/auth";
+import { defaultPlanFor } from "@/lib/billing/plans";
 import { currentClient } from "@/lib/clients";
 import type { NumberType } from "@/lib/twilio/numbers";
-import { getBusinessProfile } from "@/lib/twilio/business";
+import { getBusinessProfile, typesCoveredBy } from "@/lib/twilio/business";
 import { bundlesFor } from "@/lib/twilio/regulatory";
 import { resumeAfterCheckout } from "../actions";
 import { BuyFlow, type ResumeState } from "./buy-flow";
@@ -32,9 +33,13 @@ export default async function NewNumberPage({
   // Preselect from the storefront (/signup?number=&type=): show that number first.
   const initialType = sp.type && (TYPES as string[]).includes(sp.type) ? (sp.type as NumberType) : undefined;
   const initialContains = initialType && sp.number && /^\+44\d{9,10}$/.test(sp.number) ? sp.number : undefined;
-  const [bundles, profile] = await Promise.all([bundlesFor(client.id), getBusinessProfile(client.id)]);
-  const approvedTypes = bundles.filter((b) => b.status === "twilio-approved").map((b) => b.numberType);
-  const pendingTypes = bundles.filter((b) => b.status === "pending-review" || b.status === "in-review").map((b) => b.numberType);
+  const [bundles, profile, plan] = await Promise.all([bundlesFor(client.id), getBusinessProfile(client.id), defaultPlanFor(session.agencyId)]);
+  const pricing = plan
+    ? { currency: plan.currency, carrier: plan.carrierMonthlyPence, hosting: plan.hostingMonthlyPence, includedMinutes: plan.includedMinutes, perMinute: plan.perMinutePence, surchargeBps: plan.surchargeBps }
+    : undefined;
+  // A local registration covers 03 numbers too, so National shows as registered alongside Local.
+  const approvedTypes = bundles.filter((b) => b.status === "twilio-approved").flatMap((b) => typesCoveredBy(b.numberType));
+  const pendingTypes = bundles.filter((b) => b.status === "pending-review" || b.status === "in-review").flatMap((b) => typesCoveredBy(b.numberType)).filter((t) => !approvedTypes.includes(t));
 
   // Back from Stripe Checkout, or back from /app/business with a reserved
   // number: confirm the card (a no-op when already on file) and carry on.
@@ -72,6 +77,7 @@ export default async function NewNumberPage({
         initialType={initialType}
         initialContains={initialContains}
         resume={resume}
+        pricing={pricing}
       />
     </div>
   );

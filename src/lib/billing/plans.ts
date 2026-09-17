@@ -1,45 +1,16 @@
 import { and, eq } from "drizzle-orm";
 import type Stripe from "stripe";
 import { db } from "@/db/client";
-import { plans } from "@/db/schema";
+import { plans, type PriceRole } from "@/db/schema";
 import { agencies } from "@/db/shared";
+import { NUMBER_TYPES, NUMBER_TYPE_LABELS, wholesaleFloor } from "./pricing";
 import { forAccount, stripe } from "./stripe";
 
+// Pure pricing helpers live in ./pricing (no db/Stripe imports, safe for client
+// components); re-exported here so server code keeps one import.
+export { floorFor, formatMinor, formatPence, formatRate, fromMonthly, surchargeOn, surchargePercent, wholesaleFloor, NUMBER_TYPES, NUMBER_TYPE_LABELS, TWILIO_GBP } from "./pricing";
+
 export type Plan = typeof plans.$inferSelect;
-
-/**
- * Wholesale floor. Twilio list prices on the master account (GBP, 2026-09):
- * local £3.50/mo, mobile £2.50, 0800 £2.70; forwarded leg to a UK mobile
- * ≈3.05p/min (landline 1.58p); inbound 1p/min on local/mobile; 0800 inbound
- * 7.98p/min. A plan below these loses Chao money on every customer, so the
- * editor refuses it.
- */
-export const WHOLESALE = {
-  numberMonthlyPence: 400, // covers the dearest number type (local £3.50) + margin
-  perMinutePence: 4, // forward to mobile 3.05p + inbound 1p, rounded
-  freephoneInboundPence: 9, // 7.98p + margin
-} as const;
-
-export function wholesaleFloor(plan: Pick<Plan, "numberMonthlyPence" | "perMinutePence" | "freephoneInboundPence" | "includedMinutes">) {
-  const problems: string[] = [];
-  if (plan.numberMonthlyPence < WHOLESALE.numberMonthlyPence) {
-    problems.push(`Monthly fee per number must be at least £${(WHOLESALE.numberMonthlyPence / 100).toFixed(2)} (Twilio charges up to £3.50 per number).`);
-  }
-  if (plan.perMinutePence < WHOLESALE.perMinutePence) {
-    problems.push(`Per-minute overage must be at least ${WHOLESALE.perMinutePence}p (forwarding to a UK mobile costs about 3p a minute).`);
-  }
-  if (plan.freephoneInboundPence < WHOLESALE.freephoneInboundPence) {
-    problems.push(`0800 inbound must be at least ${WHOLESALE.freephoneInboundPence}p a minute (Twilio charges 7.98p).`);
-  }
-  // Included minutes are paid for by the number fee: every included minute
-  // costs ~4p of carrier time, so the fee must cover them.
-  const minutesCost = plan.includedMinutes * WHOLESALE.perMinutePence;
-  if (plan.numberMonthlyPence - WHOLESALE.numberMonthlyPence < minutesCost) {
-    const maxIncluded = Math.max(0, Math.floor((plan.numberMonthlyPence - WHOLESALE.numberMonthlyPence) / WHOLESALE.perMinutePence));
-    problems.push(`At £${(plan.numberMonthlyPence / 100).toFixed(2)} a month the fee only covers ${maxIncluded} included minutes (each costs about ${WHOLESALE.perMinutePence}p of carrier time).`);
-  }
-  return { ok: problems.length === 0, problems };
-}
 
 async function agencyStripeAccount(agencyId: string) {
   const [a] = await db.select({ stripeAccountId: agencies.stripeAccountId, name: agencies.name }).from(agencies).where(eq(agencies.id, agencyId)).limit(1);
@@ -48,9 +19,14 @@ async function agencyStripeAccount(agencyId: string) {
 }
 
 /**
- * Create the Stripe objects for a plan on the agency's connected account:
- * one Product, a licensed monthly Price (the number fee), Billing Meters for
- * minutes / 0800 minutes / transcriptions and a metered Price on each.
+ * Create the Stripe objects for a plan on the agency's connected account. One
+ * Product per invoice line so the customer's invoice itemises exactly what was
+ * agreed: "Twilio monthly number charge — Local", "<Agency> monthly hosting
+ * charge", "Twilio usage charge — per minute", and so on. Then:
+ *   - a licensed monthly Price per number type (the Twilio charge),
+ *   - a licensed monthly Price for hosting,
+ *   - Billing Meters + metered Prices for minutes / 0800 minutes / transcriptions,
+ *   - a TaxRate carrying the card-processing surcharge percentage.
  * Idempotent: any id already stored is reused, so re-publishing only fills gaps.
  *
  * Price changes after publishing create NEW prices (Stripe prices are
@@ -62,39 +38,50 @@ export async function publishPlan(planId: string) {
   if (!plan) throw new Error("Plan not found.");
   const floor = wholesaleFloor(plan);
   if (!floor.ok) throw new Error(floor.problems.join(" "));
-  const { account } = await agencyStripeAccount(plan.agencyId);
+  const { account, name: agencyName } = await agencyStripeAccount(plan.agencyId);
   const s = stripe();
   const opts = forAccount(account);
   const currency = plan.currency.toLowerCase();
   const suffix = plan.id.slice(0, 8);
 
-  let productId = plan.stripeProductId;
-  if (!productId) {
-    const product = await s.products.create(
-      { name: `${plan.name} — phone number`, description: plan.description ?? undefined, metadata: { tb_plan_id: plan.id } },
-      opts,
-    );
-    productId = product.id;
+  const productIds: Partial<Record<PriceRole, string>> = { ...plan.stripeProductIds };
+  const productFor = async (role: PriceRole, productName: string) => {
+    const existing = productIds[role];
+    if (existing) return existing;
+    const product = await s.products.create({ name: productName, metadata: { tb_plan_id: plan.id, tb_role: role } }, opts);
+    productIds[role] = product.id;
+    return product.id;
+  };
+  const licensed = { interval: "month", usage_type: "licensed" } as const;
+
+  // 1. Twilio's monthly number charge: one licensed price per number type.
+  const carrierPriceIds = { ...plan.stripeCarrierPriceIds };
+  for (const t of NUMBER_TYPES) {
+    const amount = plan.carrierMonthlyPence[t] ?? 0;
+    const current = carrierPriceIds[t];
+    if (current && (await priceAmount(s, opts, current)) === amount) continue;
+    const product = await productFor(`carrier:${t}`, `Twilio monthly number charge — ${NUMBER_TYPE_LABELS[t]}`);
+    carrierPriceIds[t] = (
+      await s.prices.create(
+        { product, currency, unit_amount: amount, recurring: licensed, nickname: `${plan.name} Twilio ${t}`, metadata: { tb_plan_id: plan.id, tb_role: `carrier:${t}` } },
+        opts,
+      )
+    ).id;
   }
 
-  const needsNewNumberPrice = !plan.stripeNumberPriceId || (await priceAmount(s, opts, plan.stripeNumberPriceId)) !== plan.numberMonthlyPence;
-  const numberPriceId = needsNewNumberPrice
-    ? (
-        await s.prices.create(
-          {
-            product: productId,
-            currency,
-            unit_amount: plan.numberMonthlyPence,
-            recurring: { interval: "month", usage_type: "licensed" },
-            nickname: `${plan.name} number fee`,
-            metadata: { tb_plan_id: plan.id, tb_role: "number" },
-          },
-          opts,
-        )
-      ).id
-    : plan.stripeNumberPriceId!;
+  // 2. The agency's monthly hosting charge per number.
+  let hostingPriceId = plan.stripeHostingPriceId;
+  if (!hostingPriceId || (await priceAmount(s, opts, hostingPriceId)) !== plan.hostingMonthlyPence) {
+    const product = await productFor("hosting", `${agencyName} monthly hosting charge`);
+    hostingPriceId = (
+      await s.prices.create(
+        { product, currency, unit_amount: plan.hostingMonthlyPence, recurring: licensed, nickname: `${plan.name} hosting`, metadata: { tb_plan_id: plan.id, tb_role: "hosting" } },
+        opts,
+      )
+    ).id;
+  }
 
-  // Minutes meter: forwarded + inbound + softphone minutes share one pool and
+  // 3a. Minutes meter: forwarded + inbound + softphone minutes share one pool and
   // one allowance, so they are one meter with graduated tiers.
   let usageMeterId = plan.stripeUsageMeterId;
   if (!usageMeterId) {
@@ -116,7 +103,7 @@ export async function publishPlan(planId: string) {
       : (
           await s.prices.create(
             {
-              product: productId,
+              product: await productFor("usage", "Twilio usage charge — per minute"),
               currency,
               recurring: { interval: "month", usage_type: "metered", meter: usageMeterId },
               billing_scheme: "tiered",
@@ -135,7 +122,7 @@ export async function publishPlan(planId: string) {
           )
         ).id;
 
-  // 0800 inbound: no allowance, flat per minute.
+  // 3b. 0800 inbound: no allowance, flat per minute.
   let freephoneMeterId = plan.stripeFreephoneMeterId;
   if (!freephoneMeterId) {
     const meter = await s.billing.meters.create(
@@ -156,7 +143,7 @@ export async function publishPlan(planId: string) {
       : (
           await s.prices.create(
             {
-              product: productId,
+              product: await productFor("freephone", "Twilio usage charge — 0800 inbound per minute"),
               currency,
               unit_amount: plan.freephoneInboundPence,
               recurring: { interval: "month", usage_type: "metered", meter: freephoneMeterId },
@@ -167,7 +154,7 @@ export async function publishPlan(planId: string) {
           )
         ).id;
 
-  // Voicemail transcription, only when the plan charges for it.
+  // 3c. Voicemail transcription, only when the plan charges for it.
   let voicemailMeterId = plan.stripeVoicemailMeterId;
   let voicemailPriceId = plan.stripeVoicemailPriceId;
   if (plan.voicemailTranscribePence > 0) {
@@ -188,7 +175,7 @@ export async function publishPlan(planId: string) {
       voicemailPriceId = (
         await s.prices.create(
           {
-            product: productId,
+            product: await productFor("voicemail", "Voicemail transcription"),
             currency,
             unit_amount: plan.voicemailTranscribePence,
             recurring: { interval: "month", usage_type: "metered", meter: voicemailMeterId },
@@ -201,17 +188,43 @@ export async function publishPlan(planId: string) {
     }
   }
 
+  // 4. Card processing surcharge: a percentage line on every invoice. Stripe
+  // models percentage add-ons as TaxRates (exclusive, so it is added on top);
+  // the percentage is immutable, so a change creates a new rate.
+  let surchargeTaxRateId = plan.stripeSurchargeTaxRateId;
+  if (plan.surchargeBps > 0) {
+    const percentage = plan.surchargeBps / 100;
+    if (!surchargeTaxRateId || (await taxRatePercentage(s, opts, surchargeTaxRateId)) !== percentage) {
+      surchargeTaxRateId = (
+        await s.taxRates.create(
+          {
+            display_name: "Card processing surcharge",
+            percentage,
+            inclusive: false,
+            description: `${percentage}% card processing surcharge`,
+            metadata: { tb_plan_id: plan.id, tb_role: "surcharge" },
+          },
+          opts,
+        )
+      ).id;
+    }
+  } else {
+    surchargeTaxRateId = null;
+  }
+
   const [updated] = await db
     .update(plans)
     .set({
-      stripeProductId: productId,
-      stripeNumberPriceId: numberPriceId,
+      stripeProductIds: productIds,
+      stripeCarrierPriceIds: carrierPriceIds,
+      stripeHostingPriceId: hostingPriceId,
       stripeUsageMeterId: usageMeterId,
       stripeUsagePriceId: usagePriceId,
       stripeFreephoneMeterId: freephoneMeterId,
       stripeFreephonePriceId: freephonePriceId,
       stripeVoicemailMeterId: voicemailMeterId,
       stripeVoicemailPriceId: voicemailPriceId,
+      stripeSurchargeTaxRateId: surchargeTaxRateId,
       publishedAt: new Date(),
     })
     .where(eq(plans.id, plan.id))
@@ -219,10 +232,32 @@ export async function publishPlan(planId: string) {
   return updated;
 }
 
+/** True when every Stripe object the checkout needs exists for this plan. */
+export function planFullyPublished(plan: Plan) {
+  return (
+    !!plan.publishedAt &&
+    !!plan.stripeHostingPriceId &&
+    !!plan.stripeUsagePriceId &&
+    !!plan.stripeFreephonePriceId &&
+    NUMBER_TYPES.every((t) => !!plan.stripeCarrierPriceIds[t]) &&
+    (plan.surchargeBps === 0 || !!plan.stripeSurchargeTaxRateId) &&
+    (plan.voicemailTranscribePence === 0 || !!plan.stripeVoicemailPriceId)
+  );
+}
+
 async function priceAmount(s: Stripe, opts: Stripe.RequestOptions, priceId: string): Promise<number | null> {
   try {
     const p = await s.prices.retrieve(priceId, {}, opts);
     return p.unit_amount ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function taxRatePercentage(s: Stripe, opts: Stripe.RequestOptions, taxRateId: string): Promise<number | null> {
+  try {
+    const r = await s.taxRates.retrieve(taxRateId, {}, opts);
+    return r.active ? r.percentage : null;
   } catch {
     return null;
   }
@@ -256,8 +291,4 @@ export async function defaultPlanFor(agencyId: string) {
     orderBy: (p, { desc }) => [desc(p.isDefault), desc(p.createdAt)],
   });
   return rows[0] ?? null;
-}
-
-export function formatPence(pence: number, currency = "GBP") {
-  return new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(pence / 100);
 }

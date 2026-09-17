@@ -3,7 +3,8 @@ import type Stripe from "stripe";
 import { db } from "@/db/client";
 import { numbers, plans, subscriptions } from "@/db/schema";
 import { agencies, clients } from "@/db/shared";
-import { defaultPlanFor, publishPlan } from "./plans";
+import { defaultPlanFor, planFullyPublished, publishPlan } from "./plans";
+import { NUMBER_TYPES, type NumberTypeKey } from "./pricing";
 import { forAccount, stripe } from "./stripe";
 
 export type Subscription = typeof subscriptions.$inferSelect;
@@ -33,6 +34,28 @@ export async function activeNumberCount(clientId: string) {
   return r?.n ?? 0;
 }
 
+export type NumberCounts = Record<NumberTypeKey, number>;
+
+export function emptyCounts(): NumberCounts {
+  return { local: 0, national: 0, tollfree: 0, mobile: 0 };
+}
+
+export function totalCount(c: NumberCounts) {
+  return NUMBER_TYPES.reduce((n, t) => n + (c[t] ?? 0), 0);
+}
+
+/** Active numbers per type: the licensed quantities on the subscription's carrier items. */
+export async function activeNumberCountsByType(clientId: string): Promise<NumberCounts> {
+  const rows = await db
+    .select({ type: numbers.type, n: count() })
+    .from(numbers)
+    .where(and(eq(numbers.clientId, clientId), eq(numbers.status, "active")))
+    .groupBy(numbers.type);
+  const counts = emptyCounts();
+  for (const r of rows) counts[r.type] = r.n;
+  return counts;
+}
+
 export async function getSubscription(clientId: string) {
   return db.query.subscriptions.findFirst({ where: eq(subscriptions.clientId, clientId) });
 }
@@ -45,14 +68,17 @@ export function subscriptionAllowsNumbers(sub: Subscription | null | undefined) 
 /**
  * Guarantee a paying subscription before anything is bought. Returns
  * `{ok:true}` when one exists, otherwise a Stripe Checkout URL the browser must
- * visit: subscription mode, card required and saved, licensed line for the
- * number fee (quantity = active numbers, at least 1) plus the metered lines.
+ * visit: subscription mode, card required and saved, with one licensed line
+ * for hosting (quantity = active numbers, at least 1), one licensed line per
+ * number type held (the Twilio charge; the number being bought counts as 1),
+ * the metered usage lines, and the card-processing surcharge as the
+ * subscription's default tax rate so it lands on every invoice.
  * The customer and subscription live on the agency's connected account; the
  * platform fee (agencies.platform_fee_bps) is taken per invoice.
  */
 export async function ensureSubscription(
   clientId: string,
-  opts: { successUrl: string; cancelUrl: string; email: string },
+  opts: { successUrl: string; cancelUrl: string; email: string; pendingType?: NumberTypeKey },
 ): Promise<{ ok: true; subscription: Subscription } | { ok: false; checkoutUrl: string }> {
   const existing = await getSubscription(clientId);
   if (subscriptionAllowsNumbers(existing)) return { ok: true, subscription: existing! };
@@ -60,7 +86,7 @@ export async function ensureSubscription(
   const ctx = await clientContext(clientId);
   let plan = existing ? await db.query.plans.findFirst({ where: eq(plans.id, existing.planId) }) : await defaultPlanFor(ctx.agencyId);
   if (!plan) throw new Error("Your agency has not set up a price plan yet.");
-  if (!plan.publishedAt || !plan.stripeNumberPriceId || !plan.stripeUsagePriceId || !plan.stripeFreephonePriceId) plan = await publishPlan(plan.id);
+  if (!planFullyPublished(plan)) plan = await publishPlan(plan.id);
 
   const s = stripe();
   const acct = forAccount(ctx.stripeAccountId!);
@@ -74,11 +100,15 @@ export async function ensureSubscription(
     customerId = customer.id;
   }
 
-  const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
-    { price: plan.stripeNumberPriceId!, quantity: Math.max(1, await activeNumberCount(clientId)) },
-    { price: plan.stripeUsagePriceId! },
-    { price: plan.stripeFreephonePriceId! },
-  ];
+  const counts = await activeNumberCountsByType(clientId);
+  if (opts.pendingType) counts[opts.pendingType] += 1; // the reserved number this checkout is for
+  const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [{ price: plan.stripeHostingPriceId!, quantity: Math.max(1, totalCount(counts)) }];
+  // Checkout refuses quantity 0, so only the types held now get a carrier line;
+  // syncActiveNumberQuantity adds the others as numbers of new types go live.
+  for (const t of NUMBER_TYPES) {
+    if (counts[t] > 0) lineItems.push({ price: plan.stripeCarrierPriceIds[t]!, quantity: counts[t] });
+  }
+  lineItems.push({ price: plan.stripeUsagePriceId! }, { price: plan.stripeFreephonePriceId! });
   if (plan.stripeVoicemailPriceId) lineItems.push({ price: plan.stripeVoicemailPriceId });
 
   const session = await s.checkout.sessions.create(
@@ -92,6 +122,7 @@ export async function ensureSubscription(
       allow_promotion_codes: false,
       subscription_data: {
         metadata: { tb_client_id: clientId, tb_plan_id: plan.id },
+        ...(plan.stripeSurchargeTaxRateId ? { default_tax_rates: [plan.stripeSurchargeTaxRateId] } : {}),
         ...(ctx.platformFeeBps > 0 ? { application_fee_percent: ctx.platformFeeBps / 100 } : {}),
       },
       metadata: { tb_client_id: clientId, tb_plan_id: plan.id },
@@ -129,11 +160,17 @@ export async function linkStripeSubscription(clientId: string, stripeSubscriptio
   const itemFor = (priceId: string | null | undefined) => (priceId ? ss.items.data.find((i) => i.price.id === priceId)?.id ?? null : null);
   // Period dates moved to the item level in recent API versions; read the first item.
   const first = ss.items.data[0];
+  const carrierItemIds: Partial<Record<NumberTypeKey, string>> = {};
+  for (const t of NUMBER_TYPES) {
+    const id = itemFor(plan?.stripeCarrierPriceIds[t]);
+    if (id) carrierItemIds[t] = id;
+  }
   await db
     .update(subscriptions)
     .set({
       stripeSubscriptionId: ss.id,
-      licensedItemId: itemFor(plan?.stripeNumberPriceId),
+      hostingItemId: itemFor(plan?.stripeHostingPriceId),
+      carrierItemIds,
       usageItemId: itemFor(plan?.stripeUsagePriceId),
       freephoneItemId: itemFor(plan?.stripeFreephonePriceId),
       voicemailItemId: itemFor(plan?.stripeVoicemailPriceId),
@@ -180,12 +217,42 @@ export async function confirmCheckout(clientId: string): Promise<boolean> {
   return subscriptionAllowsNumbers(await getSubscription(clientId));
 }
 
-/** Licensed quantity = active numbers; prorated so mid-month changes bill fairly. */
+/**
+ * Licensed quantities follow the active numbers, prorated so mid-month changes
+ * bill fairly: hosting = all active numbers (never below 1 while subscribed);
+ * one carrier item per number type = active numbers of that type, created the
+ * first time a type is held and removed when the last one of that type goes.
+ */
 export async function syncActiveNumberQuantity(clientId: string) {
   const sub = await getSubscription(clientId);
-  if (!sub?.stripeSubscriptionId || !sub.licensedItemId) return;
-  const qty = Math.max(1, await activeNumberCount(clientId));
-  await stripe().subscriptionItems.update(sub.licensedItemId, { quantity: qty, proration_behavior: "create_prorations" }, forAccount(sub.stripeAccountId));
+  if (!sub?.stripeSubscriptionId) return;
+  const plan = await db.query.plans.findFirst({ where: eq(plans.id, sub.planId) });
+  if (!plan) return;
+  const s = stripe();
+  const acct = forAccount(sub.stripeAccountId);
+  const prorate = { proration_behavior: "create_prorations" } as const;
+  const counts = await activeNumberCountsByType(clientId);
+
+  if (sub.hostingItemId) {
+    await s.subscriptionItems.update(sub.hostingItemId, { quantity: Math.max(1, totalCount(counts)), ...prorate }, acct);
+  }
+
+  const itemIds = { ...sub.carrierItemIds };
+  for (const t of NUMBER_TYPES) {
+    const priceId = plan.stripeCarrierPriceIds[t];
+    const itemId = itemIds[t];
+    const qty = counts[t];
+    if (itemId && qty > 0) {
+      await s.subscriptionItems.update(itemId, { quantity: qty, ...prorate }, acct);
+    } else if (itemId && qty === 0) {
+      await s.subscriptionItems.del(itemId, prorate, acct);
+      delete itemIds[t];
+    } else if (!itemId && qty > 0 && priceId) {
+      const item = await s.subscriptionItems.create({ subscription: sub.stripeSubscriptionId, price: priceId, quantity: qty, ...prorate }, acct);
+      itemIds[t] = item.id;
+    }
+  }
+  await db.update(subscriptions).set({ carrierItemIds: itemIds, updatedAt: new Date() }).where(eq(subscriptions.clientId, clientId));
 }
 
 /** Stripe-hosted billing portal (card changes, invoices, cancel). */

@@ -86,6 +86,7 @@ async function continueAfterReserve(clientId: string, numberId: string, type: Nu
     successUrl: `${origin}/app/numbers/new?checkout=success&numberId=${numberId}&endUserType=${endUserType}`,
     cancelUrl: `${origin}/app/numbers/new?checkout=cancel&numberId=${numberId}`,
     email,
+    pendingType: type,
   });
   if (!gate.ok) return { numberId, active: false, endUserType, checkoutUrl: gate.checkoutUrl };
 

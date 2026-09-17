@@ -2,8 +2,9 @@ import { and, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { plans, subscriptions, usageLedger, type usageMeter } from "@/db/schema";
 import { meterEventNames } from "./plans";
+import { NUMBER_TYPES, surchargeOn } from "./pricing";
 import { forAccount, stripe } from "./stripe";
-import { getSubscription, subscriptionAllowsNumbers } from "./subscription";
+import { getSubscription, subscriptionAllowsNumbers, totalCount, type NumberCounts } from "./subscription";
 
 export type UsageMeter = (typeof usageMeter.enumValues)[number];
 
@@ -108,14 +109,20 @@ export type UsageSummary = {
   transcriptions: number;
   includedMinutes: number;
   overageMinutes: number;
-  /** Projected usage charge for the period so far, in pence. */
+  /** Projected usage charge for the period so far, in minor units. */
   projectedPence: number;
-  /** Fixed fee for the period: number fee × active numbers. */
+  /** Twilio's monthly number charges: Σ carrier[type] × active numbers of that type. */
+  carrierPence: number;
+  /** Hosting charge × active numbers (at least 1 while subscribed). */
+  hostingPence: number;
+  /** carrierPence + hostingPence. */
   fixedPence: number;
+  /** Card processing surcharge on fixed + projected. */
+  surchargePence: number;
 };
 
 /** Minutes by meter for a period, with the plan's allowance applied. */
-export async function usageSummary(clientId: string, plan: typeof plans.$inferSelect | null, activeNumbers: number, period?: { start: Date; end: Date }): Promise<UsageSummary> {
+export async function usageSummary(clientId: string, plan: typeof plans.$inferSelect | null, active: NumberCounts, period?: { start: Date; end: Date }): Promise<UsageSummary> {
   const sub = await getSubscription(clientId);
   const now = new Date();
   const periodStart = period?.start ?? sub?.currentPeriodStart ?? new Date(now.getFullYear(), now.getMonth(), 1);
@@ -137,9 +144,12 @@ export async function usageSummary(clientId: string, plan: typeof plans.$inferSe
   const projectedPence = plan
     ? overageMinutes * plan.perMinutePence + freephoneMinutes * plan.freephoneInboundPence + transcriptions * plan.voicemailTranscribePence
     : 0;
-  const fixedPence = plan ? plan.numberMonthlyPence * Math.max(activeNumbers, sub ? 1 : 0) : 0;
+  const carrierPence = plan ? NUMBER_TYPES.reduce((sum, t) => sum + (plan.carrierMonthlyPence[t] ?? 0) * (active[t] ?? 0), 0) : 0;
+  const hostingPence = plan ? plan.hostingMonthlyPence * Math.max(totalCount(active), sub ? 1 : 0) : 0;
+  const fixedPence = carrierPence + hostingPence;
+  const surchargePence = plan ? surchargeOn(fixedPence + projectedPence, plan.surchargeBps) : 0;
 
-  return { periodStart, periodEnd, minutes, freephoneMinutes, transcriptions, includedMinutes, overageMinutes, projectedPence, fixedPence };
+  return { periodStart, periodEnd, minutes, freephoneMinutes, transcriptions, includedMinutes, overageMinutes, projectedPence, carrierPence, hostingPence, fixedPence, surchargePence };
 }
 
 export { subscriptions };

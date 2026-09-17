@@ -29,6 +29,11 @@ export function registrableTypeFor(type: NumberType): RegistrableType {
   return type === "national" ? "local" : type;
 }
 
+/** The inverse: which number types a registration of this type unlocks. */
+export function typesCoveredBy(type: NumberType): NumberType[] {
+  return type === "local" ? ["local", "national"] : [type];
+}
+
 export type BusinessProfile = typeof businessProfiles.$inferSelect;
 
 export async function getBusinessProfile(clientId: string): Promise<BusinessProfile | null> {

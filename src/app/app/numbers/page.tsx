@@ -5,6 +5,7 @@ import { numbers } from "@/db/schema";
 import { canManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import { StatusPill, formatUk, typeLabel } from "@/lib/format";
+import { reservedContext, reservedReason } from "@/lib/numbers/reserved";
 import { bundlesFor } from "@/lib/twilio/regulatory";
 import { releaseNumberAction } from "./actions";
 import { ReleaseButton } from "./release-button";
@@ -22,6 +23,7 @@ export default async function NumbersPage() {
   ]);
   const pending = bundles.filter((b) => b.status === "pending-review" || b.status === "in-review");
   const rejected = bundles.filter((b) => b.status === "twilio-rejected");
+  const reserved = rows.some((r) => r.status === "reserved") ? await reservedContext(client.id) : null;
 
   return (
     <div className="space-y-6">
@@ -87,7 +89,7 @@ export default async function NumbersPage() {
                   </td>
                   <td className="py-3">
                     <StatusPill status={n.status} />
-                    {n.status === "reserved" && <div className="mt-1 text-xs text-slate-500">Waiting for Ofcom verification</div>}
+                    {n.status === "reserved" && reserved && <div className="mt-1 text-xs text-slate-500">{reservedReason(reserved, n.type).short}</div>}
                     {n.status === "verifying" && <div className="mt-1 text-xs text-slate-500">Ofcom verification usually completes within 24h</div>}
                   </td>
                   <td className="py-3 text-right">

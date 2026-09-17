@@ -5,7 +5,8 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db/client";
 import { plans } from "@/db/schema";
-import { publishPlan, wholesaleFloor } from "@/lib/billing/plans";
+import { publishPlan } from "@/lib/billing/plans";
+import { CURRENCIES, wholesaleFloor } from "@/lib/billing/pricing";
 import { isAgency, requireSession } from "@/lib/auth";
 
 export type PlanResult = { ok: true } | { ok: false; error: string; problems?: string[] };
@@ -16,17 +17,26 @@ async function agencySession() {
   return session;
 }
 
-const pounds = (v: FormDataEntryValue | null) => Math.round(Number(String(v ?? "0").replace(/[^0-9.]/g, "")) * 100);
-const pence = (v: FormDataEntryValue | null) => Math.round(Number(String(v ?? "0").replace(/[^0-9.]/g, "")));
+const num = (v: FormDataEntryValue | null) => Number(String(v ?? "0").replace(/[^0-9.]/g, "")) || 0;
+/** "9.00" → 900 minor units. */
+const major = (v: FormDataEntryValue | null) => Math.round(num(v) * 100);
+/** "5" → 5 minor units. */
+const minor = (v: FormDataEntryValue | null) => Math.round(num(v));
+/** "3" (%) → 300 basis points. */
+const percentToBps = (v: FormDataEntryValue | null) => Math.round(num(v) * 100);
 
+const money = z.number().int().min(0);
 const schema = z.object({
   name: z.string().trim().min(2).max(60),
   description: z.string().trim().max(200).optional(),
-  numberMonthlyPence: z.number().int().min(0),
+  currency: z.enum(CURRENCIES),
+  carrierMonthlyPence: z.object({ local: money, national: money, tollfree: money, mobile: money }),
+  hostingMonthlyPence: money,
   includedMinutes: z.number().int().min(0).max(100000),
-  perMinutePence: z.number().int().min(0),
-  freephoneInboundPence: z.number().int().min(0),
-  voicemailTranscribePence: z.number().int().min(0),
+  perMinutePence: money,
+  freephoneInboundPence: money,
+  voicemailTranscribePence: money,
+  surchargeBps: z.number().int().min(0).max(2000),
 });
 
 /** Create or update a plan; refuses anything under the wholesale floor. */
@@ -37,24 +47,36 @@ export async function savePlan(formData: FormData): Promise<PlanResult> {
     const parsed = schema.safeParse({
       name: formData.get("name"),
       description: String(formData.get("description") ?? "").trim() || undefined,
-      numberMonthlyPence: pounds(formData.get("numberMonthly")),
-      includedMinutes: pence(formData.get("includedMinutes")),
-      perMinutePence: pence(formData.get("perMinute")),
-      freephoneInboundPence: pence(formData.get("freephoneInbound")),
-      voicemailTranscribePence: pence(formData.get("voicemailTranscribe")),
+      currency: String(formData.get("currency") ?? "GBP").toUpperCase(),
+      carrierMonthlyPence: {
+        local: major(formData.get("carrierLocal")),
+        national: major(formData.get("carrierNational")),
+        tollfree: major(formData.get("carrierTollfree")),
+        mobile: major(formData.get("carrierMobile")),
+      },
+      hostingMonthlyPence: major(formData.get("hostingMonthly")),
+      includedMinutes: minor(formData.get("includedMinutes")),
+      perMinutePence: minor(formData.get("perMinute")),
+      freephoneInboundPence: minor(formData.get("freephoneInbound")),
+      voicemailTranscribePence: minor(formData.get("voicemailTranscribe")),
+      surchargeBps: percentToBps(formData.get("surchargePercent")),
     });
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Check the form." };
-    const floor = wholesaleFloor(parsed.data);
-    if (!floor.ok) return { ok: false, error: "This plan is below the wholesale floor.", problems: floor.problems };
+    const data = { ...parsed.data, description: parsed.data.description ?? null };
 
     if (id) {
-      await db
-        .update(plans)
-        .set({ ...parsed.data, description: parsed.data.description ?? null })
-        .where(and(eq(plans.id, id), eq(plans.agencyId, session.agencyId)));
+      const existing = await db.query.plans.findFirst({ where: and(eq(plans.id, id), eq(plans.agencyId, session.agencyId)) });
+      if (!existing) throw new Error("Plan not found.");
+      // Stripe prices and subscriptions are single-currency: once published the currency is fixed.
+      if (existing.publishedAt) data.currency = existing.currency as (typeof CURRENCIES)[number];
+      const floor = wholesaleFloor(data);
+      if (!floor.ok) return { ok: false, error: "This plan is below the wholesale floor.", problems: floor.problems };
+      await db.update(plans).set(data).where(eq(plans.id, existing.id));
     } else {
-      const existing = await db.query.plans.findMany({ where: eq(plans.agencyId, session.agencyId), columns: { id: true } });
-      await db.insert(plans).values({ ...parsed.data, description: parsed.data.description ?? null, agencyId: session.agencyId, isDefault: existing.length === 0 });
+      const floor = wholesaleFloor(data);
+      if (!floor.ok) return { ok: false, error: "This plan is below the wholesale floor.", problems: floor.problems };
+      const others = await db.query.plans.findMany({ where: eq(plans.agencyId, session.agencyId), columns: { id: true } });
+      await db.insert(plans).values({ ...data, agencyId: session.agencyId, isDefault: others.length === 0 });
     }
     revalidatePath("/app/agency/plans");
     revalidatePath("/");

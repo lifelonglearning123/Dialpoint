@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { plans } from "@/db/schema";
+import { formatMinor, formatRate, fromMonthly, NUMBER_TYPES, NUMBER_TYPE_LABELS, surchargePercent } from "@/lib/billing/pricing";
 import { createClient } from "@/lib/supabase/server";
 import { resolveAgency } from "@/lib/tenancy/resolve";
 import { SearchWidget } from "./storefront/search-widget";
@@ -26,13 +27,13 @@ export default async function StorefrontPage() {
   // Pricing is optional on the page: a missing/unmigrated plans table or a
   // DB blip must never take the storefront down.
   const planRows = await db.query.plans
-    .findMany({ where: and(eq(plans.agencyId, agency.id), eq(plans.active, true)), orderBy: [asc(plans.numberMonthlyPence)] })
+    .findMany({ where: and(eq(plans.agencyId, agency.id), eq(plans.active, true)), orderBy: [asc(plans.hostingMonthlyPence)] })
     .catch((e) => {
       console.warn("[storefront] plans unavailable", e instanceof Error ? e.message : e);
       return [];
     });
   const accent = agency.brandPrimaryColor ?? "#0f172a";
-  const currency = agency.currency === "USD" ? "$" : "£";
+  const surcharges = [...new Set(planRows.filter((p) => p.surchargeBps > 0).map((p) => surchargePercent(p.surchargeBps)))];
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900" style={{ ["--accent" as string]: accent }}>
@@ -120,7 +121,8 @@ export default async function StorefrontPage() {
         <section id="pricing" className="mx-auto max-w-6xl px-6 py-14">
           <h2 className="text-2xl font-semibold">Simple monthly pricing</h2>
           <p className="mt-2 max-w-2xl text-slate-600">
-            A fixed fee per number plus minutes used, billed automatically each month. The AI receptionist is a separate add-on from {agency.name}.
+            Twilio&apos;s number charge, a hosting charge per number, and the minutes you use, each shown on your invoice and billed automatically each month. The AI receptionist is a separate
+            add-on from {agency.name}.
           </p>
           {planRows.length === 0 ? (
             <div className="mt-8 rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
@@ -139,20 +141,20 @@ export default async function StorefrontPage() {
                     )}
                   </div>
                   <div className="mt-4 flex items-baseline gap-1">
-                    <span className="text-4xl font-semibold">
-                      {currency}
-                      {(p.numberMonthlyPence / 100).toFixed(2)}
-                    </span>
+                    <span className="text-sm text-slate-500">from</span>
+                    <span className="text-4xl font-semibold">{formatMinor(fromMonthly(p), p.currency)}</span>
                     <span className="text-sm text-slate-500">/ number / month</span>
                   </div>
                   {p.description && <p className="mt-2 text-sm text-slate-600">{p.description}</p>}
                   <ul className="mt-4 space-y-1.5 text-sm text-slate-700">
-                    <li>{p.includedMinutes > 0 ? `${p.includedMinutes} minutes included each month` : "Pay only for the minutes you use"}</li>
+                    <li>Hosting {formatMinor(p.hostingMonthlyPence, p.currency)} per number per month</li>
                     <li>
-                      {p.perMinutePence}p per extra minute
+                      Twilio number charge: {NUMBER_TYPES.map((t) => `${NUMBER_TYPE_LABELS[t]} ${formatMinor(p.carrierMonthlyPence[t] ?? 0, p.currency)}`).join(", ")} per month
                     </li>
-                    <li>0800 inbound at {p.freephoneInboundPence}p per minute</li>
-                    <li>{p.voicemailTranscribePence > 0 ? `Voicemail transcription ${p.voicemailTranscribePence}p each` : "Voicemail transcription included"}</li>
+                    <li>{p.includedMinutes > 0 ? `${p.includedMinutes} minutes included each month, then ` : "Twilio usage "}{formatRate(p.perMinutePence, p.currency)} per minute</li>
+                    <li>0800 inbound at {formatRate(p.freephoneInboundPence, p.currency)} per minute</li>
+                    <li>{p.voicemailTranscribePence > 0 ? `Voicemail transcription ${formatRate(p.voicemailTranscribePence, p.currency)} each` : "Voicemail transcription included"}</li>
+                    {p.surchargeBps > 0 && <li>{surchargePercent(p.surchargeBps)}% card processing surcharge</li>}
                   </ul>
                   <Link href={`/signup?plan=${p.id}`} className="btn-primary mt-6 w-full" style={{ background: accent }}>
                     Get started
@@ -161,7 +163,10 @@ export default async function StorefrontPage() {
               ))}
             </div>
           )}
-          <p className="mt-4 text-xs text-slate-500">Prices exclude VAT. Carrier costs are included in the monthly fee; there is no setup fee.</p>
+          <p className="mt-4 text-xs text-slate-500">
+            Prices exclude VAT. Twilio&apos;s number and usage charges appear as their own lines on your invoice
+            {surcharges.length > 0 ? `, and a ${surcharges.join("% / ")}% card processing surcharge is added to the total` : ""}. There is no setup fee.
+          </p>
         </section>
 
         <section className="border-t border-slate-200 bg-white">

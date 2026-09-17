@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState, useTransition } from "react";
+import { formatMinor, formatRate, surchargePercent } from "@/lib/billing/pricing";
 import { formatUk, typeLabel } from "@/lib/format";
 import type { AvailableNumber, NumberType } from "@/lib/twilio/numbers";
 import { FIELD_LABELS } from "@/lib/twilio/business-labels";
@@ -10,12 +11,22 @@ import { reserveNumberAction, searchNumbersAction, type ReserveOutcome } from ".
 
 type Step = "type" | "results" | "card" | "register" | "verifying" | "active";
 
-const TYPE_OPTIONS: Array<{ value: NumberType; title: string; blurb: string; monthly: string }> = [
-  { value: "local", title: "Local (01 / 02)", blurb: "A number for your town or city. Needs a UK business address.", monthly: "from £3.50/mo carrier cost" },
-  { value: "national", title: "National (03)", blurb: "Non-geographic, charged like a landline for callers.", monthly: "from £3.50/mo carrier cost" },
-  { value: "tollfree", title: "Freephone (0800)", blurb: "Free for callers; you pay per inbound minute.", monthly: "from £2.70/mo carrier cost" },
-  { value: "mobile", title: "Mobile (07)", blurb: "Looks like a mobile, rings wherever you route it.", monthly: "from £2.50/mo carrier cost" },
+const TYPE_OPTIONS: Array<{ value: NumberType; title: string; blurb: string }> = [
+  { value: "local", title: "Local (01 / 02)", blurb: "A number for your town or city. Needs a UK business address." },
+  { value: "national", title: "National (03)", blurb: "Non-geographic, charged like a landline for callers." },
+  { value: "tollfree", title: "Freephone (0800)", blurb: "Free for callers; you pay per inbound minute." },
+  { value: "mobile", title: "Mobile (07)", blurb: "Looks like a mobile, rings wherever you route it." },
 ];
+
+/** What the customer will pay, from the agency's default plan. */
+export type PlanPricing = {
+  currency: string;
+  carrier: Record<NumberType, number>;
+  hosting: number;
+  includedMinutes: number;
+  perMinute: number;
+  surchargeBps: number;
+};
 
 export type ResumeState = {
   numberId: string;
@@ -40,8 +51,13 @@ export function BuyFlow(props: {
   initialContains?: string;
   /** Present when the browser has just returned from Stripe Checkout (Phase 3). */
   resume?: ResumeState;
+  /** Absent when the agency has not set up a plan yet. */
+  pricing?: PlanPricing;
 }) {
   const r0 = props.resume;
+  const pricing = props.pricing;
+  const monthlyFor = (t: NumberType) =>
+    pricing ? `Twilio ${formatMinor(pricing.carrier[t] ?? 0, pricing.currency)} + hosting ${formatMinor(pricing.hosting, pricing.currency)} per month` : "Priced per number type";
   const initialStep = (r: ResumeState | undefined): Step => {
     if (!r) return "type";
     if (r.cancelled || r.error) return "card";
@@ -151,7 +167,7 @@ export function BuyFlow(props: {
                   {props.pendingTypes.includes(o.value) && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-700 ring-1 ring-amber-200">verifying</span>}
                 </div>
                 <div className="mt-1 text-sm text-slate-600">{o.blurb}</div>
-                <div className="mt-2 text-xs text-slate-500">{o.monthly}</div>
+                <div className="mt-2 text-xs text-slate-500">{monthlyFor(o.value)}</div>
               </button>
             ))}
           </div>
@@ -219,12 +235,19 @@ export function BuyFlow(props: {
         <div className="card space-y-4">
           <h2 className="font-semibold">Add a card for {formatUk(chosen.e164)}</h2>
           <p className="text-sm text-slate-600">
-            Numbers are billed monthly: a fixed fee per number plus the minutes you use, charged automatically to a card you save once. The first
-            invoice is raised at the end of the month the number goes live.
+            Numbers are billed monthly, charged automatically to a card you save once. The first invoice is raised at the end of the month the number goes
+            live, and each of these appears as its own line on it:
           </p>
           <ul className="list-disc space-y-1 pl-5 text-sm text-slate-600">
-            <li>Fixed monthly fee per active number.</li>
-            <li>Usage: forwarded, inbound and browser minutes over your allowance, plus 0800 inbound minutes.</li>
+            <li>
+              Twilio monthly number charge{pricing ? `: ${formatMinor(pricing.carrier[chosen.type] ?? 0, pricing.currency)} for a ${typeLabel(chosen.type).toLowerCase()} number` : " for each number"}.
+            </li>
+            <li>Monthly hosting charge{pricing ? `: ${formatMinor(pricing.hosting, pricing.currency)} per active number` : " per active number"}.</li>
+            <li>
+              Twilio usage{pricing ? ` at ${formatRate(pricing.perMinute, pricing.currency)} per minute` : ""}: forwarded, inbound and browser minutes
+              {pricing && pricing.includedMinutes > 0 ? ` over your ${pricing.includedMinutes} included` : ""}, plus 0800 inbound minutes.
+            </li>
+            {pricing && pricing.surchargeBps > 0 && <li>A {surchargePercent(pricing.surchargeBps)}% card processing surcharge on the invoice total.</li>}
             <li>Change your card or view invoices any time under Billing. Cancel any month.</li>
           </ul>
           <div className="flex items-center justify-between pt-2">

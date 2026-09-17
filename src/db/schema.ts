@@ -307,7 +307,17 @@ export const subscriptionState = tb.enum("subscription_state", [
   "cancelled",
 ]);
 
-/** Retail plans, one or more per agency; prices set by the agency above the wholesale floor. */
+type NumberTypeValue = (typeof numberType.enumValues)[number];
+/** Stripe Product per invoice line: hosting, carrier:<type>, usage, freephone, voicemail. */
+export type PriceRole = "hosting" | `carrier:${NumberTypeValue}` | "usage" | "freephone" | "voicemail";
+
+/**
+ * Retail plans, one or more per agency; prices set by the agency above the
+ * wholesale floor. Each plan is three separately invoiced lines: Twilio's
+ * monthly number charge (per number type, passed through), the agency's
+ * monthly hosting charge per number, and Twilio usage per minute; plus a
+ * percentage card-processing surcharge on the invoice total.
+ */
 export const plans = tb.table(
   "plans",
   {
@@ -317,30 +327,43 @@ export const plans = tb.table(
       .references(() => agencies.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description"),
+    /** ISO 4217; fixed once published (Stripe prices and subscriptions are single-currency). */
     currency: text("currency").notNull().default("GBP"),
-    numberMonthlyPence: integer("number_monthly_pence").notNull(),
+    /** Twilio's monthly number charge per type, minor units (pence/cents). */
+    carrierMonthlyPence: jsonb("carrier_monthly_pence").$type<Record<NumberTypeValue, number>>().notNull(),
+    /** The agency's monthly hosting charge per number, minor units. */
+    hostingMonthlyPence: integer("hosting_monthly_pence").notNull(),
     includedMinutes: integer("included_minutes").notNull().default(0),
     perMinutePence: integer("per_minute_pence").notNull(),
     freephoneInboundPence: integer("freephone_inbound_pence").notNull().default(12),
     voicemailTranscribePence: integer("voicemail_transcribe_pence").notNull().default(0),
+    /** Card processing surcharge in basis points (300 = 3%), applied to every invoice. */
+    surchargeBps: integer("surcharge_bps").notNull().default(300),
     active: boolean("active").notNull().default(true),
     isDefault: boolean("is_default").notNull().default(false),
     // Stripe objects on the agency's connected account, created when the plan is published.
-    stripeProductId: text("stripe_product_id"),
-    stripeNumberPriceId: text("stripe_number_price_id"),
+    stripeProductIds: jsonb("stripe_product_ids").$type<Partial<Record<PriceRole, string>>>().notNull().default({}),
+    stripeCarrierPriceIds: jsonb("stripe_carrier_price_ids").$type<Partial<Record<NumberTypeValue, string>>>().notNull().default({}),
+    stripeHostingPriceId: text("stripe_hosting_price_id"),
     stripeUsagePriceId: text("stripe_usage_price_id"),
     stripeFreephonePriceId: text("stripe_freephone_price_id"),
     stripeUsageMeterId: text("stripe_usage_meter_id"),
     stripeFreephoneMeterId: text("stripe_freephone_meter_id"),
     stripeVoicemailPriceId: text("stripe_voicemail_price_id"),
     stripeVoicemailMeterId: text("stripe_voicemail_meter_id"),
+    /** Stripe TaxRate carrying the surcharge percentage (immutable, replaced when the % changes). */
+    stripeSurchargeTaxRateId: text("stripe_surcharge_tax_rate_id"),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("tb_plans_agency_idx").on(t.agencyId)],
 );
 
-/** One subscription per client: licensed item (quantity = active numbers) + metered items. */
+/**
+ * One subscription per client: a hosting item (quantity = active numbers, min 1),
+ * one carrier item per number type held (quantity = active numbers of that type),
+ * and the metered items.
+ */
 export const subscriptions = tb.table(
   "subscriptions",
   {
@@ -355,7 +378,8 @@ export const subscriptions = tb.table(
     stripeCustomerId: text("stripe_customer_id").notNull(),
     stripeSubscriptionId: text("stripe_subscription_id"),
     stripeCheckoutSessionId: text("stripe_checkout_session_id"),
-    licensedItemId: text("licensed_item_id"),
+    hostingItemId: text("hosting_item_id"),
+    carrierItemIds: jsonb("carrier_item_ids").$type<Partial<Record<NumberTypeValue, string>>>().notNull().default({}),
     usageItemId: text("usage_item_id"),
     freephoneItemId: text("freephone_item_id"),
     voicemailItemId: text("voicemail_item_id"),

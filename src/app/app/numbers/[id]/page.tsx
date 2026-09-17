@@ -6,6 +6,8 @@ import { numbers, regulatoryBundles } from "@/db/schema";
 import { canManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import { StatusPill, formatUk, typeLabel } from "@/lib/format";
+import { reservedContext, reservedReason } from "@/lib/numbers/reserved";
+import { registrableTypeFor } from "@/lib/twilio/business";
 import { activateNumberAction, releaseNumberAction, updateNumberLabelAction } from "../actions";
 import { ReleaseButton } from "../release-button";
 
@@ -20,10 +22,12 @@ export default async function NumberDetailPage({ params }: { params: Promise<{ i
 
   const bundle = n.bundleId
     ? await db.query.regulatoryBundles.findFirst({ where: eq(regulatoryBundles.id, n.bundleId) })
-    : await db.query.regulatoryBundles.findFirst({
-        where: and(eq(regulatoryBundles.clientId, client.id), eq(regulatoryBundles.numberType, n.type)),
+    : // 03 numbers are registered under the local bundle, so look that up for them.
+      await db.query.regulatoryBundles.findFirst({
+        where: and(eq(regulatoryBundles.clientId, client.id), eq(regulatoryBundles.numberType, registrableTypeFor(n.type))),
         orderBy: (b, { desc }) => [desc(b.createdAt)],
       });
+  const reason = n.status === "reserved" ? reservedReason(await reservedContext(client.id), n.type) : null;
 
   return (
     <div className="space-y-6">
@@ -50,7 +54,7 @@ export default async function NumberDetailPage({ params }: { params: Promise<{ i
             <StatusPill status={n.status} />
             <span className="text-sm text-slate-600">
               {n.status === "active" && n.activatedAt && `Live since ${n.activatedAt.toLocaleDateString("en-GB")}`}
-              {n.status === "reserved" && "Reserved; goes live when the Ofcom registration is approved"}
+              {n.status === "reserved" && reason?.long}
               {n.status === "verifying" && "Ofcom verification usually completes within 24h"}
               {n.status === "suspended" && "Suspended for non-payment; calls are not connecting"}
             </span>
@@ -65,7 +69,17 @@ export default async function NumberDetailPage({ params }: { params: Promise<{ i
               {bundle.failureReason && <div className="mt-2 text-xs text-red-700">{bundle.failureReason}</div>}
             </div>
           )}
-          {manage && n.status === "reserved" && bundle?.status === "twilio-approved" && (
+          {manage && reason?.kind === "payment" && (
+            <Link href={`/app/numbers/new?numberId=${n.id}`} className="btn-primary inline-flex">
+              Add a card to finish
+            </Link>
+          )}
+          {manage && reason?.kind === "unregistered" && (
+            <Link href="/app/business" className="btn-secondary inline-flex">
+              Enter business details
+            </Link>
+          )}
+          {manage && reason?.kind === "ready" && bundle?.status === "twilio-approved" && (
             <form action={activateNumberAction}>
               <input type="hidden" name="numberId" value={n.id} />
               <button type="submit" className="btn-secondary">

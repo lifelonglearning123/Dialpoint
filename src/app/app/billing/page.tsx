@@ -2,9 +2,9 @@ import Link from "next/link";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { plans } from "@/db/schema";
-import { formatPence } from "@/lib/billing/plans";
+import { formatPence, formatRate, NUMBER_TYPES, NUMBER_TYPE_LABELS, surchargePercent } from "@/lib/billing/pricing";
 import { stripeConfigured } from "@/lib/billing/stripe";
-import { activeNumberCount, getSubscription, recentInvoices } from "@/lib/billing/subscription";
+import { activeNumberCountsByType, getSubscription, recentInvoices, totalCount } from "@/lib/billing/subscription";
 import { usageSummary } from "@/lib/billing/usage";
 import { currentClient } from "@/lib/clients";
 import { openPortal } from "./actions";
@@ -36,8 +36,9 @@ export default async function BillingPage() {
 
   const sub = await getSubscription(client.id);
   const plan = sub ? await db.query.plans.findFirst({ where: eq(plans.id, sub.planId) }) : null;
-  const active = await activeNumberCount(client.id);
-  const summary = await usageSummary(client.id, plan ?? null, active);
+  const counts = await activeNumberCountsByType(client.id);
+  const active = totalCount(counts);
+  const summary = await usageSummary(client.id, plan ?? null, counts);
   const invoices = sub && stripeConfigured() ? await recentInvoices(client.id).catch(() => []) : [];
   const currency = plan?.currency ?? "GBP";
   const fmt = (p: number) => formatPence(p, currency);
@@ -77,7 +78,7 @@ export default async function BillingPage() {
         <div className="card">
           <h2 className="font-semibold">No subscription yet</h2>
           <p className="mt-1 text-sm text-slate-600">
-            A subscription starts the first time you buy a number: a fixed monthly fee per number plus the minutes you use, charged automatically.
+            A subscription starts the first time you buy a number: Twilio&apos;s monthly number charge, a monthly hosting charge per number, and the minutes you use, charged automatically.
           </p>
           <Link href="/app/numbers/new" className="btn-primary mt-4 inline-flex">
             Buy a number
@@ -90,14 +91,18 @@ export default async function BillingPage() {
               <div className="text-xs uppercase tracking-wide text-slate-500">Plan</div>
               <div className="mt-1 text-lg font-semibold">{plan.name}</div>
               <div className="mt-1 text-xs text-slate-500">
-                {fmt(plan.numberMonthlyPence)} per number · {plan.includedMinutes} min included · {plan.perMinutePence}p/min after
+                Hosting {fmt(plan.hostingMonthlyPence)} per number · Twilio number {NUMBER_TYPES.filter((t) => counts[t] > 0)
+                  .map((t) => `${NUMBER_TYPE_LABELS[t]} ${fmt(plan.carrierMonthlyPence[t] ?? 0)}`)
+                  .join(", ") || "per type"}{" "}
+                · {plan.includedMinutes > 0 ? `${plan.includedMinutes} min included · ` : ""}
+                {formatRate(plan.perMinutePence, currency)}/min
               </div>
             </div>
             <div className="card">
               <div className="text-xs uppercase tracking-wide text-slate-500">Fixed this period</div>
               <div className="mt-1 text-3xl font-semibold">{fmt(summary.fixedPence)}</div>
               <div className="mt-1 text-xs text-slate-500">
-                {Math.max(active, 1)} active number{Math.max(active, 1) === 1 ? "" : "s"}
+                {Math.max(active, 1)} active number{Math.max(active, 1) === 1 ? "" : "s"} · Twilio {fmt(summary.carrierPence)} + hosting {fmt(summary.hostingPence)}
               </div>
             </div>
             <div className="card">
@@ -112,7 +117,8 @@ export default async function BillingPage() {
               <div className="text-xs uppercase tracking-wide text-slate-500">Next charge</div>
               <div className="mt-1 text-lg font-semibold">{summary.periodEnd.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}</div>
               <div className="mt-1 text-xs text-slate-500">
-                estimated {fmt(summary.fixedPence + summary.projectedPence)}
+                estimated {fmt(summary.fixedPence + summary.projectedPence + summary.surchargePence)}
+                {plan.surchargeBps > 0 ? ` incl. ${surchargePercent(plan.surchargeBps)}% card surcharge` : ""}
                 {sub.cancelAtPeriodEnd ? " · cancels at period end" : ""}
               </div>
             </div>
@@ -127,8 +133,8 @@ export default async function BillingPage() {
               <Stat label="Forwarded to your phones" value={`${summary.minutes.forward} min`} />
               <Stat label="Callers' inbound minutes" value={`${summary.minutes.inbound} min`} />
               <Stat label="Browser softphone" value={`${summary.minutes.softphone} min`} />
-              <Stat label="0800 inbound (always billed)" value={`${summary.freephoneMinutes} min`} sub={`${plan.freephoneInboundPence}p/min`} />
-              <Stat label="Voicemails transcribed" value={String(summary.transcriptions)} sub={plan.voicemailTranscribePence ? `${plan.voicemailTranscribePence}p each` : "included"} />
+              <Stat label="0800 inbound (always billed)" value={`${summary.freephoneMinutes} min`} sub={`${formatRate(plan.freephoneInboundPence, currency)}/min`} />
+              <Stat label="Voicemails transcribed" value={String(summary.transcriptions)} sub={plan.voicemailTranscribePence ? `${formatRate(plan.voicemailTranscribePence, currency)} each` : "included"} />
             </div>
             <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
               <div
