@@ -10,6 +10,7 @@ import { callerTag, contextForCall, lookupNumber } from "./context";
 import { ivrOptionPath, nextPath, signCursor, stepAt, verifyCursor, type Cursor } from "./engine";
 import { executeStep, executeTransfer, resumeRun, startRun, type RunState } from "./run";
 import { scheduleState } from "./schedule";
+import { reportCallToSignal } from "@/lib/signal/report";
 import { storeCallRecording } from "./recordings";
 import { dialRetell, hangup, VoiceResponse, voicemail, withNotice, xml } from "./twiml";
 import { storeVoicemail, transcribeVoicemail } from "./voicemail";
@@ -256,6 +257,8 @@ async function handleCallRecording(req: NextRequest, form: FormData, p: P): Prom
       recordingUrl: p.RecordingUrl,
       durationSeconds: p.RecordingDuration ? Number(p.RecordingDuration) : null,
     });
+    // The recording usually lands just after the call ends: now it can go to Signal.
+    after(() => reportCallToSignal(call.id).then(() => undefined));
   }
   return new Response(null, { status: 204 });
 }
@@ -289,6 +292,8 @@ export async function handleStatus(req: NextRequest, form: FormData, p: P, leg: 
     if (ENDED.has(p.CallStatus ?? "")) {
       await appendTrace(call.id, "call_ended", { status: p.CallStatus ?? "", duration: p.CallDuration ?? "" });
       await finalizeCall(parentSid, { status: p.CallStatus ?? "", durationSeconds: p.CallDuration ? Number(p.CallDuration) : undefined });
+      // Missed and blocked calls are ready now; the rest wait for their recording or transcript.
+      after(() => reportCallToSignal(call.id).then(() => undefined));
     }
     return new Response(null, { status: 204 });
   }

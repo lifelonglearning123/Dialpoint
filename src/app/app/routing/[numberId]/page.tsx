@@ -98,7 +98,8 @@ export default async function EditRoutingPage({
             clientName={client.name}
             hours={hours}
             agents={retell.map(({ id, name }) => ({ id, name }))}
-            unsupportedAgents={agentList.filter((a) => a.platform !== "retell").map((a) => ({ name: a.name, platform: a.platform }))}
+            // 'ghl' rows are Signal's placeholders for staff and phone-line calls, not AI agents.
+            unsupportedAgents={agentList.filter((a) => a.platform === "elevenlabs").map((a) => ({ name: a.name, platform: a.platform }))}
             inHours={initial(current?.settings?.inHours, "forward_then_ai")}
             outOfHours={initial(current?.settings?.outOfHours, "ai")}
             record={current?.record ?? false}

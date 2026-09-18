@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import { voicemails } from "@/db/schema";
 import { env } from "@/env";
 import { recordUsage } from "@/lib/billing/usage";
+import { reportCallToSignal } from "@/lib/signal/report";
 import { appendTrace } from "./calls";
 import { fetchRecording } from "./recordings";
 
@@ -76,4 +77,6 @@ export async function transcribeVoicemail(voicemailId: string) {
     console.error("[voicemail] transcription failed", e);
     await appendTrace(vm.callId, "voicemail_transcription_failed", { error: String(e).slice(0, 200) });
   }
+  // Transcribed (or given up): the voicemail can go to Signal's call log now.
+  await reportCallToSignal(vm.callId).catch((e) => console.error("[signal] voicemail report", e));
 }

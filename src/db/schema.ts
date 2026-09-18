@@ -238,6 +238,9 @@ export const calls = tb.table(
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
     durationSeconds: integer("duration_seconds"),
+    /** Reported to Signal's call log (every non-AI call; see src/lib/signal/report.ts). */
+    signalReportedAt: timestamp("signal_reported_at", { withTimezone: true }),
+    signalReportError: text("signal_report_error"),
   },
   (t) => [
     index("tb_calls_client_started_idx").on(t.clientId, t.startedAt),
