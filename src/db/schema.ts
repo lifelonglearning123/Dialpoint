@@ -261,7 +261,11 @@ export const callLegs = tb.table(
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { withTimezone: true }),
   },
-  (t) => [index("tb_call_legs_call_idx").on(t.callId)],
+  (t) => [
+    index("tb_call_legs_call_idx").on(t.callId),
+    // Twilio sends a leg's status callbacks concurrently; one row per leg.
+    uniqueIndex("tb_call_legs_call_sid_unique").on(t.callId, t.twilioCallSid),
+  ],
 );
 
 export const voicemails = tb.table(

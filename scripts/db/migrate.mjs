@@ -18,7 +18,9 @@ const done = new Set((await sql`select hash from tb.__migrations`).map((r) => r.
 
 let applied = 0;
 for (const entry of journal.entries) {
-  const file = readFileSync(`drizzle/${entry.tag}.sql`, "utf8");
+  // Line endings are normalised so a checkout with core.autocrlf (CRLF) hashes
+  // the same as the LF file that was applied.
+  const file = readFileSync(`drizzle/${entry.tag}.sql`, "utf8").replace(/\r\n/g, "\n");
   const hash = createHash("sha256").update(file).digest("hex");
   if (done.has(hash)) continue;
   const stmts = file

@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { callLegs, calls, numbers } from "@/db/schema";
 import { recordUsage } from "@/lib/billing/usage";
@@ -47,12 +47,20 @@ export async function findCallBySid(twilioCallSid: string) {
   return db.query.calls.findFirst({ where: eq(calls.twilioCallSid, twilioCallSid) });
 }
 
-/** Status callback for a child leg: insert on first sight, update status/duration afterwards. */
+const LEG_ENDED = ["completed", "no-answer", "busy", "failed", "canceled"];
+
+/**
+ * Status callback for a child leg. Twilio posts a leg's callbacks
+ * concurrently (initiated and ringing can land in the same millisecond), so
+ * this is one upsert on (call, leg SID), never read-then-insert. A late
+ * callback cannot move a finished leg back to an earlier status.
+ */
 export async function recordLeg(input: { callId: string; twilioCallSid: string; kind: LegKind; target: string | null; status: string; durationSeconds?: number }) {
-  const existing = await db.query.callLegs.findFirst({ where: and(eq(callLegs.callId, input.callId), eq(callLegs.twilioCallSid, input.twilioCallSid)) });
-  const ended = input.status === "completed" || input.status === "no-answer" || input.status === "busy" || input.status === "failed" || input.status === "canceled";
-  if (!existing) {
-    await db.insert(callLegs).values({
+  const ended = LEG_ENDED.includes(input.status);
+  const endedList = sql.raw(LEG_ENDED.map((s) => `'${s}'`).join(", "));
+  await db
+    .insert(callLegs)
+    .values({
       callId: input.callId,
       twilioCallSid: input.twilioCallSid,
       kind: input.kind,
@@ -60,19 +68,18 @@ export async function recordLeg(input: { callId: string; twilioCallSid: string; 
       status: input.status,
       durationSeconds: input.durationSeconds ?? null,
       endedAt: ended ? new Date() : null,
-    });
-    return;
-  }
-  await db
-    .update(callLegs)
-    .set({
-      status: input.status,
-      durationSeconds: input.durationSeconds ?? existing.durationSeconds,
-      endedAt: ended ? new Date() : existing.endedAt,
       // A browser leg that connected counts as accepted (no whisper on <Client>).
-      accepted: existing.accepted || (existing.kind === "human_client" && (input.status === "in-progress" || input.status === "answered")),
+      accepted: input.kind === "human_client" && (input.status === "in-progress" || input.status === "answered"),
     })
-    .where(eq(callLegs.id, existing.id));
+    .onConflictDoUpdate({
+      target: [callLegs.callId, callLegs.twilioCallSid],
+      set: {
+        status: sql`case when ${callLegs.status} in (${endedList}) and excluded.status not in (${endedList}) then ${callLegs.status} else excluded.status end`,
+        durationSeconds: sql`coalesce(excluded.duration_seconds, ${callLegs.durationSeconds})`,
+        endedAt: sql`coalesce(${callLegs.endedAt}, excluded.ended_at)`,
+        accepted: sql`${callLegs.accepted} or excluded.accepted`,
+      },
+    });
 
   // Billing (Phase 3): a finished human leg is carrier time we pay for. The
   // ledger is idempotent on the leg SID, so Twilio's retries cannot double bill.
