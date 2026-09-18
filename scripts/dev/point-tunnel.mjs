@@ -4,9 +4,11 @@
 // because a quick tunnel gets a new address each time it starts.
 //
 //   node scripts/dev/point-tunnel.mjs https://xxxx.trycloudflare.com
+//   node scripts/dev/point-tunnel.mjs https://dialpoint.vercel.app --keep-env
 //
 // Restart `npm run dev` afterwards so the app builds its callback URLs from
-// the new address.
+// the new address. --keep-env re-points the numbers only (e.g. back to
+// production) and leaves .env.local alone.
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local", quiet: true });
 import { readFileSync, writeFileSync } from "node:fs";
@@ -14,21 +16,25 @@ import { createDecipheriv } from "node:crypto";
 import postgres from "postgres";
 import twilio from "twilio";
 
+const args = process.argv.slice(2);
+const keepEnv = args.includes("--keep-env");
 let base;
 try {
-  const u = new URL(process.argv[2] ?? "");
+  const u = new URL(args.find((a) => !a.startsWith("--")) ?? "");
   if (u.protocol !== "https:") throw new Error();
   base = u.origin;
 } catch {
-  console.error("usage: node scripts/dev/point-tunnel.mjs https://xxxx.trycloudflare.com");
+  console.error("usage: node scripts/dev/point-tunnel.mjs https://xxxx.trycloudflare.com [--keep-env]");
   process.exit(1);
 }
 
-const envFile = ".env.local";
-const text = readFileSync(envFile, "utf8");
-const line = `PUBLIC_BASE_URL=${base}`;
-writeFileSync(envFile, /^PUBLIC_BASE_URL=.*$/m.test(text) ? text.replace(/^PUBLIC_BASE_URL=.*$/m, line) : `${text.replace(/\n?$/, "\n")}${line}\n`);
-console.log(`.env.local: ${line}`);
+if (!keepEnv) {
+  const envFile = ".env.local";
+  const text = readFileSync(envFile, "utf8");
+  const line = `PUBLIC_BASE_URL=${base}`;
+  writeFileSync(envFile, /^PUBLIC_BASE_URL=.*$/m.test(text) ? text.replace(/^PUBLIC_BASE_URL=.*$/m, line) : `${text.replace(/\n?$/, "\n")}${line}\n`);
+  console.log(`.env.local: ${line}`);
+}
 
 // Same format as src/lib/crypto/credentials.ts: v1:<iv>:<tag>:<ciphertext>, base64, AES-256-GCM.
 function decrypt(enc) {
@@ -71,5 +77,5 @@ for (const acct of accounts) {
   }
 }
 await sql.end();
-console.log(failed ? `\n${failed} update(s) failed; see above.` : "\nDone. Now restart `npm run dev` (Ctrl+C, then npm run dev again).");
+console.log(failed ? `\n${failed} update(s) failed; see above.` : keepEnv ? "\nDone." : "\nDone. Now restart `npm run dev` (Ctrl+C, then npm run dev again).");
 process.exit(failed ? 1 : 0);
