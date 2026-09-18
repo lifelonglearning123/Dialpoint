@@ -7,10 +7,10 @@ import { z } from "zod";
 import { db } from "@/db/client";
 import { closures, humanTargets, numbers, routingPolicies } from "@/db/schema";
 import { clients } from "@/db/shared";
-import { isAgency, requireManage } from "@/lib/auth";
+import { requireManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
-import { parsePolicy } from "@/lib/routing/policy";
-import { TEMPLATE_NAMES, templatePolicy, type IvrChoice, type TemplateName } from "@/lib/routing/policy";
+import { clientAgents } from "@/lib/routing/agents";
+import { ANSWER_MODES, parsePolicy, policyAgentIds, simplePolicy, toE164, type AnswerMode, type PeriodRoute } from "@/lib/routing/policy";
 
 const e164 = z.string().trim().regex(/^\+[1-9]\d{6,14}$/, "Use international format, e.g. +447700900123");
 
@@ -133,49 +133,66 @@ export async function moveTarget(formData: FormData) {
 
 /* --------------------------------------------------------------- policy */
 
+const PERIODS = [
+  { prefix: "in", label: "Office hours" },
+  { prefix: "out", label: "Outside office hours" },
+] as const;
+
+/** One period's choice from the form, or an error message for the user. */
+function readPeriod(formData: FormData, prefix: string, ownNumber: string, agentIds: Set<string>): PeriodRoute | string {
+  const mode = String(formData.get(`${prefix}_mode`) ?? "") as AnswerMode;
+  if (!ANSWER_MODES.includes(mode)) return "choose how calls are answered.";
+  const ring = Number(formData.get(`${prefix}_ringSeconds`));
+  const route: PeriodRoute = { mode, ringSeconds: Math.min(120, Math.max(5, Math.round(ring) || (mode === "forward" ? 30 : 20))) };
+  if (mode !== "ai") {
+    const to = toE164(String(formData.get(`${prefix}_forwardTo`) ?? ""));
+    if (!to) return "enter the number to forward to, e.g. 07700 900123 or +447700900123.";
+    if (to === ownNumber) return "a number can't forward to itself.";
+    route.forwardTo = to;
+  }
+  if (mode !== "forward") {
+    const agentId = String(formData.get(`${prefix}_agentId`) ?? "");
+    if (!agentIds.has(agentId)) return "choose the AI agent.";
+    route.agentId = agentId;
+  }
+  return route;
+}
+
 export async function savePolicy(formData: FormData) {
   const { session, client } = await ctx();
   const numberId = String(formData.get("numberId") ?? "");
   const number = await db.query.numbers.findFirst({ where: and(eq(numbers.id, numberId), eq(numbers.clientId, client.id), ne(numbers.status, "released")) });
   if (!number) throw new Error("Number not found.");
-
-  const template = String(formData.get("template") ?? "you_first") as TemplateName;
-  if (!TEMPLATE_NAMES.includes(template)) throw new Error("Unknown template.");
-  const ringSeconds = Math.min(120, Math.max(5, Number(formData.get("ringSeconds") ?? 20) || 20));
   const current = await db.query.routingPolicies.findFirst({ where: and(eq(routingPolicies.numberId, numberId), eq(routingPolicies.active, true)) });
-  // The AI agent link is the agency's to set (it points at their Signal
-  // agent). Client admins keep whatever is already linked when they save.
-  let aiAgentId: string | undefined;
-  if (isAgency(session.role)) {
-    aiAgentId = String(formData.get("aiAgentId") ?? "").trim() || undefined;
-  } else {
-    try {
-      aiAgentId = current ? parsePolicy(current.policy).aiAgentId : undefined;
-    } catch {
-      aiAgentId = undefined;
-    }
-  }
 
-  let ivr: { prompt: string; options: Record<string, { label: string; to: IvrChoice }> } | undefined;
-  if (template === "front_desk") {
-    const prompt = String(formData.get("ivrPrompt") ?? "").trim();
-    const options: Record<string, { label: string; to: IvrChoice }> = {};
-    for (const digit of ["1", "2", "3", "4"]) {
-      const to = String(formData.get(`ivr_${digit}_to`) ?? "");
-      const label = String(formData.get(`ivr_${digit}_label`) ?? "").trim();
-      if (to === "humans" || to === "ai" || to === "voicemail") options[digit] = { label: label || to, to };
-    }
-    if (!prompt || Object.keys(options).length === 0) throw new Error("A menu needs a prompt and at least one option.");
-    ivr = { prompt, options };
+  // Agency staff and the client's admins both choose the agent, from the
+  // client's own Retell agents in Signal. An agent the number already uses
+  // stays selectable even if it is not in that list.
+  let currentAgents: string[] = [];
+  try {
+    currentAgents = current ? policyAgentIds(parsePolicy(current.policy)) : [];
+  } catch {
+    currentAgents = [];
   }
+  const agentIds = new Set([...(await clientAgents(client.id)).filter((a) => a.platform === "retell").map((a) => a.id), ...currentAgents]);
 
-  const policy = templatePolicy(template, { ringSeconds, aiAgentId, ivr });
+  const routes: PeriodRoute[] = [];
+  for (const period of PERIODS) {
+    const r = readPeriod(formData, period.prefix, number.e164, agentIds);
+    if (typeof r === "string") redirect(`/app/routing/${numberId}?error=${encodeURIComponent(`${period.label}: ${r}`)}`);
+    routes.push(r);
+  }
+  const record = formData.get("record") === "on";
+  const policy = parsePolicy(
+    simplePolicy({ inHours: routes[0], outOfHours: routes[1] }, { record, announceRecording: record && formData.get("announce") === "on" }),
+  );
+
   await db.transaction(async (tx) => {
     if (current) await tx.update(routingPolicies).set({ active: false }).where(eq(routingPolicies.id, current.id));
     await tx.insert(routingPolicies).values({
       numberId,
       version: (current?.version ?? 0) + 1,
-      template,
+      template: "simple",
       policy,
       active: true,
       createdBy: session.profileId,

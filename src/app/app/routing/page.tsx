@@ -5,7 +5,8 @@ import { closures, humanTargets, numbers, routingPolicies } from "@/db/schema";
 import { canManage } from "@/lib/auth";
 import { currentClient } from "@/lib/clients";
 import { StatusPill, formatUk, typeLabel } from "@/lib/format";
-import { describePolicy, parsePolicy, policyUsesAi, TEMPLATE_LABELS, type TemplateName } from "@/lib/routing/policy";
+import { clientAgents } from "@/lib/routing/agents";
+import { describePolicy, parsePolicy, policyMissingAgent, TEMPLATE_LABELS, type TemplateName } from "@/lib/routing/policy";
 import { addBrowserTarget, addClosure, addPhoneTarget, deleteTarget, moveTarget, removeClosure, saveBusinessHours, toggleTarget } from "./actions";
 
 const DAYS: Array<[string, string]> = [
@@ -24,11 +25,13 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
   if (!client) return null;
   const manage = canManage(session);
 
-  const [nums, targets, closureRows] = await Promise.all([
+  const [nums, targets, closureRows, agentList] = await Promise.all([
     db.query.numbers.findMany({ where: and(eq(numbers.clientId, client.id), ne(numbers.status, "released")), orderBy: [desc(numbers.createdAt)] }),
     db.query.humanTargets.findMany({ where: eq(humanTargets.clientId, client.id), orderBy: [asc(humanTargets.priority), asc(humanTargets.createdAt)] }),
     db.query.closures.findMany({ where: eq(closures.clientId, client.id), orderBy: [asc(closures.date)] }),
+    clientAgents(client.id),
   ]);
+  const agentNames = Object.fromEntries(agentList.map((a) => [a.id, a.name]));
   const policies = await Promise.all(
     nums.map((n) => db.query.routingPolicies.findFirst({ where: and(eq(routingPolicies.numberId, n.id), eq(routingPolicies.active, true)) })),
   );
@@ -59,14 +62,14 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
             {nums.map((n, i) => {
               const row = policies[i];
               let lines: string[] = [];
-              let title = "Default: ring your phones, then voicemail";
+              let title: string | null = "Default: ring your phones, then voicemail";
               let needsAgent = false;
               if (row) {
                 try {
                   const p = parsePolicy(row.policy);
-                  title = TEMPLATE_LABELS[(p.template ?? "custom") as TemplateName]?.title ?? "Custom";
-                  lines = describePolicy(p);
-                  needsAgent = policyUsesAi(p) && !p.aiAgentId;
+                  title = p.template === "simple" ? null : (TEMPLATE_LABELS[(p.template ?? "custom") as TemplateName]?.title ?? "Custom");
+                  lines = describePolicy(p, agentNames);
+                  needsAgent = policyMissingAgent(p);
                 } catch {
                   title = "Invalid policy";
                 }
@@ -79,14 +82,14 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
                       <StatusPill status={n.status} />
                       <span className="text-xs text-slate-500">{n.label ?? typeLabel(n.type)}</span>
                     </div>
-                    <div className="mt-1 text-sm font-medium text-slate-800">{title}</div>
-                    <ul className="mt-1 space-y-0.5 text-xs text-slate-500">
+                    {title && <div className="mt-1 text-sm font-medium text-slate-800">{title}</div>}
+                    <ul className={`mt-1 space-y-0.5 ${title ? "text-xs text-slate-500" : "text-sm text-slate-700"}`}>
                       {lines.map((l, k) => (
                         <li key={k}>{l}</li>
                       ))}
                     </ul>
                     {needsAgent && (
-                      <p className="mt-2 text-xs text-amber-700">This route uses the AI receptionist but none is linked yet; those steps are skipped until one is.</p>
+                      <p className="mt-2 text-xs text-amber-700">This route uses an AI agent but none is chosen; those steps are skipped until one is. Edit the routing to pick one.</p>
                     )}
                   </div>
                   <Link href={`/app/routing/${n.id}`} className="btn-secondary shrink-0">
@@ -100,12 +103,13 @@ export default async function RoutingPage({ searchParams }: { searchParams: Prom
       </section>
 
       <section className="card">
-        <h2 className="font-semibold">Who answers</h2>
+        <h2 className="font-semibold">Transfers from the AI</h2>
         <p className="mb-4 text-sm text-slate-500">
-          Every enabled phone rings at the same time. Phones hear &ldquo;press 1 to accept&rdquo; so a mobile&apos;s own voicemail can never take the call.
+          When the AI agent puts a caller through to a person, every enabled phone here rings at the same time. Numbers with no routing saved also ring these
+          phones. Phones hear &ldquo;press 1 to accept&rdquo; so a mobile&apos;s own voicemail can never take the call.
         </p>
         {targets.length === 0 ? (
-          <p className="mb-4 text-sm text-amber-700">No phones yet. Until you add one, calls go straight to the AI receptionist or voicemail.</p>
+          <p className="mb-4 text-sm text-slate-500">No phones yet.</p>
         ) : (
           <ul className="mb-4 divide-y divide-slate-100">
             {targets.map((t, i) => (

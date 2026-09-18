@@ -6,7 +6,7 @@ import { spikeStatus } from "@/lib/spike/handlers";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Status callbacks for the parent call, every child leg, and voicemail recordings. */
+/** Status callbacks for the parent call, every child leg, voicemails and call recordings. */
 export async function POST(req: NextRequest) {
   const form = await req.formData();
   const p = readForm(form, FORM_KEYS);

@@ -2,15 +2,16 @@ import { and, eq } from "drizzle-orm";
 import { after, type NextRequest } from "next/server";
 import twilio from "twilio";
 import { db } from "@/db/client";
-import { numbers, twilioAccounts } from "@/db/schema";
+import { calls, numbers, twilioAccounts } from "@/db/schema";
 import { masterCreds, subaccountCreds } from "@/lib/twilio/master";
 import { registerAi } from "./ai";
 import { appendTrace, createCall, finalizeCall, findCallBySid, markLegAccepted, recordLeg, type LegKind } from "./calls";
 import { callerTag, contextForCall, lookupNumber } from "./context";
-import { ivrOptionPath, nextPath, signCursor, stepAt, type Cursor } from "./engine";
+import { ivrOptionPath, nextPath, signCursor, stepAt, verifyCursor, type Cursor } from "./engine";
 import { executeStep, executeTransfer, resumeRun, startRun, type RunState } from "./run";
 import { scheduleState } from "./schedule";
-import { dialRetell, hangup, VoiceResponse, voicemail, xml } from "./twiml";
+import { storeCallRecording } from "./recordings";
+import { dialRetell, hangup, VoiceResponse, voicemail, withNotice, xml } from "./twiml";
 import { storeVoicemail, transcribeVoicemail } from "./voicemail";
 import { verifyTwilio } from "./verify";
 
@@ -63,7 +64,13 @@ export async function handleInbound(req: NextRequest, form: FormData, p: P): Pro
     evalCtx: { schedule, caller: tag.tag },
   });
   await appendTrace(call.id, "rule_selected", { rule: String(state.ruleIndex), steps: state.steps.map((s) => s.type).join(" → ") });
-  return xml(await executeStep(state, "0"));
+  const first = await executeStep(state, "0");
+  // The notice answers the call, so never in front of a <Reject> (blocked caller).
+  if (ctx.policy.record && ctx.policy.announceRecording && state.steps[0]?.type !== "reject") {
+    await appendTrace(call.id, "recording_notice", {});
+    return xml(withNotice(first, "This call may be recorded."));
+  }
+  return xml(first);
 }
 
 async function stateFromCursor(req: NextRequest, form: FormData, cursor: Cursor): Promise<{ state: RunState } | { error: Response }> {
@@ -106,6 +113,9 @@ export async function handleAfterStep(req: NextRequest, form: FormData, p: P, cu
     case "ring_humans":
     case "forward_raw":
       if (p.DialBridged === "true") {
+        // Bridged means a person had the call. A plain forward has no press-1
+        // to mark the leg accepted, so mark it here or the log would say missed.
+        if (p.DialCallSid) await markLegAccepted(p.DialCallSid);
         await appendTrace(state.callId, "human_conversation_ended", { duration: p.DialCallDuration ?? "" });
         return xml(hangup());
       }
@@ -161,8 +171,12 @@ export async function handleAfterTransfer(req: NextRequest, form: FormData, p: P
     return xml(hangup());
   }
   try {
+    // Back to the agent that was on the call before it asked for the transfer.
+    const trace = (await findCallBySid(state.twilioCallSid))?.routeTrace ?? [];
+    const lastAgent = trace.findLast((t) => t.step === "ai_registered")?.data.agentId;
     const { retellCallId, sipUri } = await registerAi({
       ctx: state.ctx,
+      agentId: lastAgent || undefined,
       callId: state.callId,
       twilioCallSid: state.twilioCallSid,
       from: state.from,
@@ -171,7 +185,8 @@ export async function handleAfterTransfer(req: NextRequest, form: FormData, p: P
       callerName: state.callerName,
     });
     await appendTrace(state.callId, "ai_reregistered_after_failed_transfer", { retellCallId });
-    return xml(dialRetell({ cursor: signCursor({ c: state.callId, r: state.ruleIndex, p: "ai_retry" }), sipUri, afterPath: "/api/voice/after-ai" }));
+    const cursor = signCursor({ c: state.callId, r: state.ruleIndex, p: "ai_retry" });
+    return xml(dialRetell({ cursor, sipUri, afterPath: "/api/voice/after-ai", record: state.ctx.policy.record }));
   } catch (e) {
     await appendTrace(state.callId, "ai_register_failed", { error: String(e).slice(0, 200) });
     return xml(voicemail({ cursor: signCursor({ c: state.callId, r: state.ruleIndex, p: "voicemail" }), businessName: state.ctx.client.name }));
@@ -223,10 +238,33 @@ export async function handleAfterVoicemail(p: P, cursor: Cursor): Promise<Respon
   return xml(hangup());
 }
 
+/** <Dial record> finished: keep the recording against the call its cursor names. */
+async function handleCallRecording(req: NextRequest, form: FormData, p: P): Promise<Handled> {
+  const cursor = verifyCursor(req.nextUrl.searchParams.get("k"));
+  const call = cursor
+    ? await db.query.calls.findFirst({ where: eq(calls.id, cursor.c) })
+    : p.CallSid
+      ? await findCallBySid(p.CallSid)
+      : null;
+  if (!call) return null;
+  if (!(await verifyTwilio(req, form, call.clientId))) return new Response("forbidden", { status: 403 });
+  if (p.RecordingSid && p.RecordingUrl && (p.RecordingStatus ?? "completed") === "completed") {
+    await storeCallRecording({
+      callId: call.id,
+      clientId: call.clientId,
+      recordingSid: p.RecordingSid,
+      recordingUrl: p.RecordingUrl,
+      durationSeconds: p.RecordingDuration ? Number(p.RecordingDuration) : null,
+    });
+  }
+  return new Response(null, { status: 204 });
+}
+
 const LEG_KINDS: Record<string, LegKind> = { human_pstn: "human_pstn", human_client: "human_client", ai: "ai" };
 
 /** Status callbacks. Null = call unknown to the engine. */
 export async function handleStatus(req: NextRequest, form: FormData, p: P, leg: string): Promise<Handled> {
+  if (leg === "call_recording") return handleCallRecording(req, form, p);
   const parentSid = leg === "parent" || leg === "voicemail_recording" ? p.CallSid : (p.ParentCallSid ?? p.CallSid);
   if (!parentSid) return null;
   const call = await findCallBySid(parentSid);

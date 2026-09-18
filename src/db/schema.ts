@@ -173,7 +173,7 @@ export const routingPolicies = tb.table(
       .notNull()
       .references(() => numbers.id, { onDelete: "cascade" }),
     version: integer("version").notNull().default(1),
-    template: text("template").notNull(), // you_first | ai_reception | office_hours | front_desk | custom
+    template: text("template").notNull(), // simple (the editor); you_first | ai_reception | office_hours | front_desk | custom on older rows
     policy: jsonb("policy").notNull(),
     active: boolean("active").notNull().default(true),
     createdBy: uuid("created_by").references(() => profiles.id, { onDelete: "set null" }),
@@ -284,6 +284,32 @@ export const voicemails = tb.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("tb_voicemails_client_idx").on(t.clientId, t.createdAt)],
+);
+
+/**
+ * Conversation recordings, one per answered <Dial> (forwarded phone or AI)
+ * when the number's routing has recording on. Voicemails are in `voicemails`.
+ * Audio stays in the client's Twilio subaccount; /api/recordings/[id] plays it.
+ */
+export const callRecordings = tb.table(
+  "call_recordings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    callId: uuid("call_id")
+      .notNull()
+      .references(() => calls.id, { onDelete: "cascade" }),
+    clientId: uuid("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    recordingSid: text("recording_sid").notNull(),
+    recordingUrl: text("recording_url").notNull(),
+    durationSeconds: integer("duration_seconds"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("tb_call_recordings_call_idx").on(t.callId),
+    uniqueIndex("tb_call_recordings_sid_unique").on(t.recordingSid),
+  ],
 );
 
 /* ------------------------------------------------------------------------

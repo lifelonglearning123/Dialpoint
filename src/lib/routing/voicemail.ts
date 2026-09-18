@@ -3,9 +3,9 @@ import OpenAI, { toFile } from "openai";
 import { db } from "@/db/client";
 import { voicemails } from "@/db/schema";
 import { env } from "@/env";
-import { masterCreds, subaccountCreds } from "@/lib/twilio/master";
 import { recordUsage } from "@/lib/billing/usage";
 import { appendTrace } from "./calls";
+import { fetchRecording } from "./recordings";
 
 /**
  * Recording finished: store the voicemail, then transcribe and summarise it.
@@ -29,10 +29,7 @@ export async function storeVoicemail(input: { callId: string; clientId: string; 
 }
 
 async function downloadRecording(clientId: string, recordingUrl: string): Promise<Buffer> {
-  const creds = (await subaccountCreds(clientId)) ?? masterCreds();
-  const res = await fetch(`${recordingUrl}.mp3`, {
-    headers: { Authorization: "Basic " + Buffer.from(`${creds.accountSid}:${creds.authToken}`).toString("base64") },
-  });
+  const res = await fetchRecording(clientId, recordingUrl);
   if (!res.ok) throw new Error(`recording download ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }

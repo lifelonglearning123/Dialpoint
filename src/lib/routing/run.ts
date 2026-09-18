@@ -84,20 +84,30 @@ export async function executeStep(state: RunState, path: string, attempt = 0): P
         timeoutSeconds: step.timeoutSeconds ?? 20,
         callerId: state.from.startsWith("+") ? state.from : state.to,
         whisper: step.whisper !== false,
+        record: state.ctx.policy.record,
       });
     }
     case "forward_raw": {
       if (step.number === state.from) return advance("target_is_caller");
-      await appendTrace(state.callId, "forward_raw", { path, number: step.number });
-      return forwardRaw({ cursor: cursorFor(state, path), number: step.number, callerId: state.from.startsWith("+") ? state.from : state.to });
+      await appendTrace(state.callId, "forward_raw", { path, number: step.number, whisper: String(step.whisper === true) });
+      return forwardRaw({
+        cursor: cursorFor(state, path),
+        number: step.number,
+        callerId: state.from.startsWith("+") ? state.from : state.to,
+        timeoutSeconds: step.timeoutSeconds,
+        whisper: step.whisper,
+        businessName: state.ctx.client.name,
+        record: state.ctx.policy.record,
+      });
     }
     case "ai": {
       const reason =
         (step.reason as Parameters<typeof registerAi>[0]["reason"] | undefined) ??
         (path === "0" ? (state.evalCtx.schedule === "in_hours" ? "ai_first" : "after_hours") : "overflow");
       try {
-        const { retellCallId, sipUri } = await registerAi({
+        const { retellCallId, sipUri, agentId } = await registerAi({
           ctx: state.ctx,
+          agentId: step.agentId,
           callId: state.callId,
           twilioCallSid: state.twilioCallSid,
           from: state.from,
@@ -105,8 +115,8 @@ export async function executeStep(state: RunState, path: string, attempt = 0): P
           reason,
           callerName: state.callerName,
         });
-        await appendTrace(state.callId, "ai_registered", { path, retellCallId, reason });
-        return dialRetell({ cursor: cursorFor(state, path), sipUri });
+        await appendTrace(state.callId, "ai_registered", { path, retellCallId, reason, agentId });
+        return dialRetell({ cursor: cursorFor(state, path), sipUri, record: state.ctx.policy.record });
       } catch (e) {
         await appendTrace(state.callId, "ai_register_failed", { path, error: String(e).slice(0, 200) });
         return advance("ai_unavailable");
@@ -138,5 +148,6 @@ export async function executeTransfer(state: RunState): Promise<Twiml | null> {
     callerId: state.from.startsWith("+") ? state.from : state.to,
     whisper: true,
     transfer: true,
+    record: state.ctx.policy.record,
   });
 }

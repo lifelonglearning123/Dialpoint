@@ -71,6 +71,8 @@ export const agencies = pgTable(
     ghlApiKeyEnc: text("ghl_api_key_enc"),
     ghlLocationId: text("ghl_location_id"),
     ghlFromEmail: text("ghl_from_email"),
+    /** The agency's own Retell workspace, when it has one; its AI agents live there. */
+    retellApiKeyEnc: text("retell_api_key_enc"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("agencies_slug_unique").on(t.slug)],
@@ -142,4 +144,24 @@ export const invites = pgTable("invites", {
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   claimedAt: timestamp("claimed_at", { withTimezone: true }),
+});
+
+/**
+ * AI agents built in Signal, one row per agent per client. Read only: the
+ * routing editor offers a client's active Retell agents. `platform` is a
+ * Signal enum (retell | elevenlabs | ghl), mirrored as text.
+ */
+export const agents = pgTable("agents", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  agencyId: uuid("agency_id")
+    .notNull()
+    .references(() => agencies.id, { onDelete: "cascade" }),
+  clientId: uuid("client_id")
+    .notNull()
+    .references(() => clients.id, { onDelete: "cascade" }),
+  platform: text("platform").notNull(),
+  platformAgentId: text("platform_agent_id").notNull(),
+  name: text("name").notNull(),
+  phoneNumber: text("phone_number"),
+  active: boolean("active").notNull().default(true),
 });

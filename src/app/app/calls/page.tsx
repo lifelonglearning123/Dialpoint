@@ -1,6 +1,6 @@
-import { desc, eq, inArray } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db/client";
-import { callLegs, calls, voicemails } from "@/db/schema";
+import { callLegs, callRecordings, calls, voicemails } from "@/db/schema";
 import { currentClient } from "@/lib/clients";
 import { formatUk } from "@/lib/format";
 
@@ -24,12 +24,13 @@ export default async function CallsPage() {
   if (!client) return null;
   const rows = await db.query.calls.findMany({ where: eq(calls.clientId, client.id), orderBy: [desc(calls.startedAt)], limit: 100 });
   const ids = rows.map((r) => r.id);
-  const [legs, vms] = ids.length
+  const [legs, vms, recs] = ids.length
     ? await Promise.all([
         db.query.callLegs.findMany({ where: inArray(callLegs.callId, ids) }),
         db.query.voicemails.findMany({ where: inArray(voicemails.callId, ids) }),
+        db.query.callRecordings.findMany({ where: inArray(callRecordings.callId, ids), orderBy: [asc(callRecordings.createdAt)] }),
       ])
-    : [[], []];
+    : [[], [], []];
   const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: client.timezone, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 
   return (
@@ -48,6 +49,7 @@ export default async function CallsPage() {
               const myLegs = legs.filter((l) => l.callId === c.id);
               const accepted = myLegs.find((l) => l.accepted);
               const vm = vms.find((v) => v.callId === c.id);
+              const myRecs = recs.filter((r) => r.callId === c.id);
               return (
                 <li key={c.id} className="p-4">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -66,9 +68,19 @@ export default async function CallsPage() {
                     {accepted ? ` · answered on ${accepted.kind === "human_client" ? "the browser" : formatUk(accepted.target ?? "")}` : ""}
                     {c.aiSummary ? ` · ${c.aiSummary}` : ""}
                   </div>
+                  {myRecs.map((r, i) => (
+                    <div key={r.id} className="mt-2 flex flex-wrap items-center gap-3 text-sm">
+                      <span className="text-slate-600">
+                        Recording{myRecs.length > 1 ? ` ${i + 1}` : ""}
+                        {r.durationSeconds ? ` · ${dur(r.durationSeconds)}` : ""}
+                      </span>
+                      <audio controls preload="none" src={`/api/recordings/${r.id}`} className="h-8 max-w-full" />
+                    </div>
+                  ))}
                   {vm && (
                     <div className="mt-2 rounded-md bg-amber-50 p-3 text-sm">
                       <div className="font-medium text-amber-800">Voicemail{vm.durationSeconds ? ` · ${dur(vm.durationSeconds)}` : ""}</div>
+                      <audio controls preload="none" src={`/api/recordings/${vm.id}`} className="mt-2 h-8 max-w-full" />
                       {vm.summary && <div className="mt-1 text-amber-900">{vm.summary}</div>}
                       <div className="mt-1 text-xs text-amber-800/80">{vm.transcript ?? "Transcribing…"}</div>
                     </div>
